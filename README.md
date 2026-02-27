@@ -33,7 +33,7 @@ $$D_i = \sqrt{\sum_{j=1}^{n} (S_j - F_{ij})^2}$$
 
 | 基站锁定与管理 | 沉浸式指纹采集 | 平板模式 & 开发者评估台 |
 | :---: | :---: | :---: |
-| <img src="images/1.png" width="250"/> | <img src="images/2.png" width="250"/> | <img src="images/3.png" width="250"/> |
+| <img src="images/1.jpg" width="250"/> | <img src="images/2.jpg" width="250"/> | <img src="images/3.jpg" width="250"/> |
 
 ## 🚀 快速开始
 
@@ -58,14 +58,14 @@ com.example.indoornavi/
 ├── SharedViewModel.kt     # 全局状态管家，解决后台数据保活问题
 └── ...
 ```
-👨‍💻 开发者与致谢
-Core Developer: [你的名字]
+## 👨‍💻 开发者与致谢
+### Core Developer: Casper-003
 
-Contact: [你的邮箱]
+### Contact: casper-003@outlook.com
 
-Institution: [你的大学/学院名称]
+### Institution: L
 
-本项目为本科毕业设计成果。UI 层全面采用 Kotlin + Jetpack Compose 现代声明式 UI 框架构建。
+### 本项目为本科毕业设计成果。UI 层全面采用 Kotlin + Jetpack Compose 现代声明式 UI 框架构建。
 
-📄 开源协议
+## 📄 开源协议
 This project is licensed under the MIT License.
