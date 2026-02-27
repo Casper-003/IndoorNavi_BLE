@@ -29,11 +29,10 @@ $$D_i = \sqrt{\sum_{j=1}^{n} (S_j - F_{ij})^2}$$
 
 ## 📸 系统截图
 
-*(💡 提示：将你的截图重命名为 1.png, 2.png, 3.png 放在项目的 `images` 文件夹下，即可在此处显示)*
 
 | 基站锁定与管理 | 沉浸式指纹采集 | 平板模式 & 开发者评估台 |
 | :---: | :---: | :---: |
-| <img src="images/1.jpg" width="250"/> | <img src="images/2.jpg" width="250"/> | <img src="images/3.jpg" width="250"/> |
+| <img src="images/1.jpg" width="200"/> | <img src="images/2.jpg" width="200"/> | <img src="images/3.jpg" width="693"/> |
 
 ## 🚀 快速开始
 
