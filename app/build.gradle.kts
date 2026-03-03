@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.ksp) // 搭载全新的 2.3.4 引擎
 }
 
 android {
@@ -54,4 +55,9 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation("androidx.datastore:datastore-preferences:1.0.0")
+    implementation("dev.chrisbanes.haze:haze:0.5.4")
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
 }
