@@ -5,16 +5,16 @@
 ![BLE](https://img.shields.io/badge/Bluetooth-BLE%204.0%2B-0082FC.svg?logo=bluetooth)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-IndoorNavi 是一款基于 Android 平台的低功耗蓝牙 (BLE) 室内定位应用，专为缺少 GPS 信号的室内环境（如商场、车库、教学楼）设计。本项目不仅实现了完整的位置指纹定位工作流（离线建库 + 在线解算），还提供了一套专为学术评估打造的“开发者性能测试台”。
+IndoorNavi 是一款基于 Android 平台的低功耗蓝牙 (BLE) 室内定位应用，为缺少 GPS 信号的室内环境设计。
 
 ## ✨ 核心特性
 
-* 📡 **高频信号采集**：实时扫描 BLE 信标 (Beacons)，结合平滑滤波算法剔除 RSSI 异常跳变。
-* 🧠 **WKNN 算法引擎**：内置加权 K-近邻 (Weighted K-Nearest Neighbors) 算法，相比传统 KNN 显著提升定位精度。
-* 🗺️ **纯净点阵雷达引擎**：弃用低效的列表组件，采用 Android底层 `Canvas` 绘制的无极缩放交互式雷达地图。
-* 📱 **全形态自适应布局**：基于 `BoxWithConstraints` 实现响应式设计，完美适配手机竖屏与平板/PC横屏（左右分栏工作台）。
-* 🌓 **深色模式支持**：全局 Material Design 3 规范，无缝跟随系统深色/浅色模式切换。
-* 🛠️ **开发者评估模式**：
+*  **信号采集**：实时扫描 BLE 信标 (Beacons)，结合平滑滤波算法剔除 RSSI 异常跳变。
+*  **算法引擎**：内置加权 K-近邻 (Weighted K-Nearest Neighbors) 算法，相比传统 KNN 显著提升定位精度。
+*  **点阵雷达**：弃用低效的列表组件，采用 Android底层 `Canvas` 绘制的无极缩放交互式雷达地图。
+*  **自适应布局**：基于 `BoxWithConstraints` 实现响应式设计，完美适配手机竖屏与平板/PC横屏（左右分栏工作台）。
+*  **深色模式**：全局 Material Design 3 规范，无缝跟随系统深色/浅色模式切换。
+*  **开发者模式**：
     * 动态调节 $K$ 值与算法类型 (KNN vs WKNN)。
     * 开启/关闭基于 EMA（指数移动平均）的坐标级轨迹防抖。
     * 点击雷达图设定基准真值 (Ground Truth)，**实时动态测算定位误差 (米)**。
