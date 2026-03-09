@@ -64,11 +64,11 @@ com.example.indoornavi/
 └── ...
 ```
 ##  关于此软件
-* Core Developer: Casper-003
+* Core Developer: Casper-003 & Gemini
 * Contact: casper-003@outlook.com
 * Institution: LNU
 * 本项目为本科毕业设计成果。
 
 ##  开源协议
 This project is licensed under the MIT License.
-*Developed with ❤️ by Casper-003*
+*Developed with ❤️ by Casper-003 & Gemini*
