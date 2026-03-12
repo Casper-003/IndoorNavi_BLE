@@ -5,13 +5,13 @@ plugins {
 }
 
 android {
-    namespace = "com.example.indoornavi"
+    namespace = "com.example.echo"
     compileSdk {
         version = release(36)
     }
 
     defaultConfig {
-        applicationId = "com.example.indoornavi"
+        applicationId = "com.example.echo"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
@@ -59,5 +59,6 @@ dependencies {
     implementation("dev.chrisbanes.haze:haze:0.5.4")
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
+    implementation("androidx.compose.material:material-icons-extended:1.6.1")
     ksp(libs.androidx.room.compiler)
 }
