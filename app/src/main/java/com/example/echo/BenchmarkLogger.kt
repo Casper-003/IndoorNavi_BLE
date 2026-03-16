@@ -15,9 +15,13 @@ data class BenchmarkRecord(
     val truthX: Double, val truthY: Double,
     val knnX: Double, val knnY: Double,
     val wknnX: Double, val wknnY: Double,
+    val awknnX: Double, val awknnY: Double,
+    val purePdrX: Double, val purePdrY: Double,
     val fusedX: Double, val fusedY: Double,
     val validN: Int,
     val d1: Double,
+    val dynamicK: Int,
+    val gainW: Double, // 🌟 新增：记录当前帧分配给蓝牙的信任权重
     val rawRssi: Int,
     val smoothedRssi: Int,
     val envLabel: String
@@ -28,7 +32,6 @@ class BenchmarkLogger {
     private val records = mutableListOf<BenchmarkRecord>()
     private var logJob: Job? = null
 
-    // 🌟 新增：安全取消机制，清理废弃的协程和脏数据
     fun cancelLogging() {
         logJob?.cancel()
         records.clear()
@@ -44,12 +47,14 @@ class BenchmarkLogger {
         activeFingerprints: List<ReferencePoint>,
         kValue: Int,
         getFused: () -> Point?,
+        getPurePdr: () -> Point?,
+        getGainW: () -> Double, // 🌟 新增回调
         envLabel: String,
         targetSamples: Int = 50,
         onProgress: (Float) -> Unit,
         onComplete: () -> Unit
     ) {
-        cancelLogging() // 启动前先确保环境干净
+        cancelLogging()
         logJob = coroutineScope.launch(Dispatchers.Default) {
             var lastHash = 0L
             var lockedMac: String? = null
@@ -74,9 +79,12 @@ class BenchmarkLogger {
                     val raw = targetDevice?.rawRssi ?: -100
                     val smoothed = targetDevice?.smoothedRssi ?: -100
 
-                    val knnResult = locator.locateDetailed(liveRssiMap, activeFingerprints, kValue, false)
-                    val wknnResult = locator.locateDetailed(liveRssiMap, activeFingerprints, kValue, true)
+                    val knnResult = locator.locateDetailed(liveRssiMap, activeFingerprints, kValue, useWknn = false, useAwknn = false)
+                    val wknnResult = locator.locateDetailed(liveRssiMap, activeFingerprints, kValue, useWknn = true, useAwknn = false)
+                    val awknnResult = locator.locateDetailed(liveRssiMap, activeFingerprints, kValue, useWknn = true, useAwknn = true, rho = 1.5)
+
                     val fusedPos = getFused() ?: Point(0.0, 0.0)
+                    val purePdrPos = getPurePdr() ?: Point(0.0, 0.0)
 
                     records.add(
                         BenchmarkRecord(
@@ -84,8 +92,13 @@ class BenchmarkLogger {
                             truthX = truth.x, truthY = truth.y,
                             knnX = knnResult?.coordinate?.x ?: 0.0, knnY = knnResult?.coordinate?.y ?: 0.0,
                             wknnX = wknnResult?.coordinate?.x ?: 0.0, wknnY = wknnResult?.coordinate?.y ?: 0.0,
+                            awknnX = awknnResult?.coordinate?.x ?: 0.0, awknnY = awknnResult?.coordinate?.y ?: 0.0,
+                            purePdrX = purePdrPos.x, purePdrY = purePdrPos.y,
                             fusedX = fusedPos.x, fusedY = fusedPos.y,
-                            validN = wknnResult?.validN ?: 0, d1 = wknnResult?.d1 ?: Double.MAX_VALUE,
+                            validN = awknnResult?.validN ?: wknnResult?.validN ?: 0,
+                            d1 = awknnResult?.d1 ?: wknnResult?.d1 ?: Double.MAX_VALUE,
+                            dynamicK = awknnResult?.dynamicK ?: kValue,
+                            gainW = getGainW(), // 🌟 记录日志
                             rawRssi = raw, smoothedRssi = smoothed, envLabel = envLabel
                         )
                     )
@@ -111,6 +124,8 @@ class BenchmarkLogger {
         activeFingerprints: List<ReferencePoint>,
         kValue: Int,
         getFused: () -> Point?,
+        getPurePdr: () -> Point?,
+        getGainW: () -> Double, // 🌟 新增回调
         envLabel: String,
         durationSeconds: Int = 60,
         onProgress: (Float) -> Unit,
@@ -138,9 +153,12 @@ class BenchmarkLogger {
                 val raw = targetDevice?.rawRssi ?: -100
                 val smoothed = targetDevice?.smoothedRssi ?: -100
 
-                val knnResult = locator.locateDetailed(liveRssiMap, activeFingerprints, kValue, false)
-                val wknnResult = locator.locateDetailed(liveRssiMap, activeFingerprints, kValue, true)
+                val knnResult = locator.locateDetailed(liveRssiMap, activeFingerprints, kValue, useWknn = false, useAwknn = false)
+                val wknnResult = locator.locateDetailed(liveRssiMap, activeFingerprints, kValue, useWknn = true, useAwknn = false)
+                val awknnResult = locator.locateDetailed(liveRssiMap, activeFingerprints, kValue, useWknn = true, useAwknn = true, rho = 1.5)
+
                 val fusedPos = getFused() ?: Point(0.0, 0.0)
+                val purePdrPos = getPurePdr() ?: Point(0.0, 0.0)
 
                 records.add(
                     BenchmarkRecord(
@@ -148,8 +166,13 @@ class BenchmarkLogger {
                         truthX = Double.NaN, truthY = Double.NaN,
                         knnX = knnResult?.coordinate?.x ?: 0.0, knnY = knnResult?.coordinate?.y ?: 0.0,
                         wknnX = wknnResult?.coordinate?.x ?: 0.0, wknnY = wknnResult?.coordinate?.y ?: 0.0,
+                        awknnX = awknnResult?.coordinate?.x ?: 0.0, awknnY = awknnResult?.coordinate?.y ?: 0.0,
+                        purePdrX = purePdrPos.x, purePdrY = purePdrPos.y,
                         fusedX = fusedPos.x, fusedY = fusedPos.y,
-                        validN = wknnResult?.validN ?: 0, d1 = wknnResult?.d1 ?: Double.MAX_VALUE,
+                        validN = awknnResult?.validN ?: wknnResult?.validN ?: 0,
+                        d1 = awknnResult?.d1 ?: wknnResult?.d1 ?: Double.MAX_VALUE,
+                        dynamicK = awknnResult?.dynamicK ?: kValue,
+                        gainW = getGainW(), // 🌟 记录日志
                         rawRssi = raw, smoothedRssi = smoothed, envLabel = envLabel
                     )
                 )
@@ -173,6 +196,8 @@ class BenchmarkLogger {
         activeFingerprints: List<ReferencePoint>,
         kValue: Int,
         getFused: () -> Point?,
+        getPurePdr: () -> Point?,
+        getGainW: () -> Double, // 🌟 新增回调
         envLabel: String
     ) {
         cancelLogging()
@@ -194,9 +219,12 @@ class BenchmarkLogger {
                 val raw = targetDevice?.rawRssi ?: -100
                 val smoothed = targetDevice?.smoothedRssi ?: -100
 
-                val knnResult = locator.locateDetailed(liveRssiMap, activeFingerprints, kValue, false)
-                val wknnResult = locator.locateDetailed(liveRssiMap, activeFingerprints, kValue, true)
+                val knnResult = locator.locateDetailed(liveRssiMap, activeFingerprints, kValue, useWknn = false, useAwknn = false)
+                val wknnResult = locator.locateDetailed(liveRssiMap, activeFingerprints, kValue, useWknn = true, useAwknn = false)
+                val awknnResult = locator.locateDetailed(liveRssiMap, activeFingerprints, kValue, useWknn = true, useAwknn = true, rho = 1.5)
+
                 val fusedPos = getFused() ?: Point(0.0, 0.0)
+                val purePdrPos = getPurePdr() ?: Point(0.0, 0.0)
 
                 records.add(
                     BenchmarkRecord(
@@ -204,8 +232,13 @@ class BenchmarkLogger {
                         truthX = Double.NaN, truthY = Double.NaN,
                         knnX = knnResult?.coordinate?.x ?: 0.0, knnY = knnResult?.coordinate?.y ?: 0.0,
                         wknnX = wknnResult?.coordinate?.x ?: 0.0, wknnY = wknnResult?.coordinate?.y ?: 0.0,
+                        awknnX = awknnResult?.coordinate?.x ?: 0.0, awknnY = awknnResult?.coordinate?.y ?: 0.0,
+                        purePdrX = purePdrPos.x, purePdrY = purePdrPos.y,
                         fusedX = fusedPos.x, fusedY = fusedPos.y,
-                        validN = wknnResult?.validN ?: 0, d1 = wknnResult?.d1 ?: Double.MAX_VALUE,
+                        validN = awknnResult?.validN ?: wknnResult?.validN ?: 0,
+                        d1 = awknnResult?.d1 ?: wknnResult?.d1 ?: Double.MAX_VALUE,
+                        dynamicK = awknnResult?.dynamicK ?: kValue,
+                        gainW = getGainW(), // 🌟 记录日志
                         rawRssi = raw, smoothedRssi = smoothed, envLabel = envLabel
                     )
                 )
@@ -215,7 +248,7 @@ class BenchmarkLogger {
 
     fun stopAndExport(context: Context) {
         val currentRecords = records.toList()
-        cancelLogging() // 导出前停掉所有任务
+        cancelLogging()
 
         if (currentRecords.isEmpty()) {
             Toast.makeText(context, "无有效物理采样数据", Toast.LENGTH_SHORT).show()
@@ -230,28 +263,36 @@ class BenchmarkLogger {
                 # TruthX/Y: 物理真值 (动态连续轨迹模式下为 NaN)
                 # KNN_X/Y : 传统 K-Nearest Neighbors 算法预测坐标 (米 / m)
                 # WKNN_X/Y: 距离倒数加权 WKNN 算法预测坐标 (米 / m)
-                # Fused_X/Y: PDR 航位推算与 WKNN 互补滤波后的融合坐标 (米 / m)
-                # Valid_N : 参与本次解算的有效特征维度数量 (表征环境盲区遮挡)
+                # AWKNN_X/Y: 自适应截断加权算法预测坐标 (米 / m)
+                # PurePDR_X/Y: 纯航位推算发散轨迹 (米 / m) (对照组)
+                # Fused_X/Y: 互补滤波融合坐标 (米 / m)
+                # Valid_N : 参与本次解算的有效特征维度数量
                 # Min_D1  : 第一近邻归一化欧氏距离
-                # Raw_RSSI: 锁定首选基站的原始信号强度 (dBm，用于滤波对比)
+                # Dyn_K   : AWKNN 算法动态截断后的实际采用 K 值
+                # Gain_W  : 动态互补滤波中分配给蓝牙系统的信任权重 (0.1 ~ 0.9)
+                # Raw_RSSI: 锁定首选基站的原始信号强度 (dBm)
                 # Sm_RSSI : 锁定首选基站的平滑滤波信号 (dBm)
-                # EnvLabel: 环境上下文标签 (开阔/盲区/静止/走动)
+                # EnvLabel: 环境上下文标签
                 # ====================================================================
                 
             """.trimIndent()
 
-            val csvHeader = "Time,TruthX,TruthY,KNN_X,KNN_Y,WKNN_X,WKNN_Y,Fused_X,Fused_Y,Valid_N,Min_D1,Raw_RSSI,Smoothed_RSSI,Env_Label\n"
+            // 🌟 加入 Gain_W 列
+            val csvHeader = "Time,TruthX,TruthY,KNN_X,KNN_Y,WKNN_X,WKNN_Y,AWKNN_X,AWKNN_Y,PurePDR_X,PurePDR_Y,Fused_X,Fused_Y,Valid_N,Min_D1,Dyn_K,Gain_W,Raw_RSSI,Smoothed_RSSI,Env_Label\n"
 
             val data = currentRecords.joinToString("\n") { record ->
                 String.format(
                     Locale.US,
-                    "%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%.3f,%d,%d,%s",
+                    "%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%.3f,%d,%.3f,%d,%d,%s",
                     record.timestamp,
                     record.truthX, record.truthY,
                     record.knnX, record.knnY,
                     record.wknnX, record.wknnY,
+                    record.awknnX, record.awknnY,
+                    record.purePdrX, record.purePdrY,
                     record.fusedX, record.fusedY,
-                    record.validN, record.d1,
+                    record.validN, record.d1, record.dynamicK,
+                    record.gainW, // 🌟 格式化注入
                     record.rawRssi, record.smoothedRssi, record.envLabel
                 )
             }

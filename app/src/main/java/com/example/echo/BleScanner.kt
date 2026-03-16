@@ -46,15 +46,17 @@ class BleScanner(private val context: Context) {
             var forceUpdate = false // 是否持有免死金牌，要求无视节流阀立刻刷新UI
 
             if (existingDevice != null) {
-                existingDevice.rawRssi = rssi
-                // 即使不立刻刷 UI，后台依旧在精准计算滑动均值
-                existingDevice.smoothedRssi = existingDevice.filter.addAndGetAverage(rssi)
-                existingDevice.lastSeen = System.currentTimeMillis()
+                synchronized(existingDevice) {
+                    existingDevice.rawRssi = rssi
+                    // 即使不立刻刷 UI，后台依旧在精准计算滑动均值
+                    existingDevice.smoothedRssi = existingDevice.filter.addAndGetAverage(rssi)
+                    existingDevice.lastSeen = System.currentTimeMillis()
 
-                // 🌟 如果设备原本无名，突然在后续广播里解析出了名字，立刻升级它的待遇
-                if (existingDevice.name.isNullOrBlank() && !deviceName.isNullOrBlank()) {
-                    existingDevice.name = deviceName
-                    forceUpdate = true
+                    // 🌟 如果设备原本无名，突然在后续广播里解析出了名字，立刻升级它的待遇
+                    if (existingDevice.name.isNullOrBlank() && !deviceName.isNullOrBlank()) {
+                        existingDevice.name = deviceName
+                        forceUpdate = true
+                    }
                 }
             } else {
                 val newFilter = MovingAverageFilter()
@@ -64,7 +66,7 @@ class BleScanner(private val context: Context) {
                 forceUpdate = true // 🌟 发现新设备，拿到免死金牌，立刻强制刷新 UI！
             }
 
-            val now = System.currentTimeMillis()
+            val now = android.os.SystemClock.elapsedRealtime()
 
             // 🌟 引擎重构：节流阀机制 (Throttling)
             // 如果是新设备，立刻放行上屏；如果是老设备更新信号，限制最高 2Hz (500ms) 的刷新率

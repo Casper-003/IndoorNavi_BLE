@@ -1,6 +1,7 @@
 package com.example.echo
 
 import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -65,10 +66,11 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
 
     var kValue by remember { mutableFloatStateOf(4f) }
     var useWknn by remember { mutableStateOf(true) }
+    var useAwknn by remember { mutableStateOf(false) } // 🌟 AWKNN 状态
     var smoothingStrategy by remember { mutableIntStateOf(2) }
 
     if (!sharedViewModel.isAdvancedModeEnabled) {
-        kValue = 4f; useWknn = true; smoothingStrategy = 2
+        kValue = 4f; useWknn = true; useAwknn = false; smoothingStrategy = 2
     }
 
     var groundTruthPoint by remember { mutableStateOf<Point?>(null) }
@@ -79,11 +81,12 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
 
     val w = sharedViewModel.spaceWidth.toFloatOrNull() ?: 10f
     val l = sharedViewModel.spaceLength.toFloatOrNull() ?: 10f
-    val s = sharedViewModel.gridSpacing.toFloatOrNull() ?: 2f
+    // 🌟 防崩溃：强制限制网格间距最小为 0.1，防止死循环导致内存溢出
+    val s = (sharedViewModel.gridSpacing.toFloatOrNull() ?: 2f).coerceAtLeast(0.1f)
 
     var lastUiBleHash by remember { mutableLongStateOf(0L) }
 
-    LaunchedEffect(liveDevices, activeFingerprints, kValue, useWknn) {
+    LaunchedEffect(liveDevices, activeFingerprints, kValue, useWknn, useAwknn) {
         if (activeFingerprints.isNotEmpty() && sharedViewModel.selectedDevices.size >= 3) {
             var currentHash = 0L
             for (mac in sharedViewModel.selectedDevices.keys) {
@@ -94,13 +97,17 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
             if (currentHash != lastUiBleHash && currentHash != 0L) {
                 lastUiBleHash = currentHash
                 val liveRssiMap = sharedViewModel.selectedDevices.keys.associateWith { mac -> liveDevices.find { it.macAddress == mac }?.smoothedRssi ?: -100 }
-                val newRawPos = locator.locate(liveRssiMap, activeFingerprints, kValue.roundToInt(), useWknn)
-                rawPosition = newRawPos
 
-                if (newRawPos != null) {
-                    fusionEngine.updateWknnPosition(newRawPos)
-                    if (emaSmoothedPosition == null) emaSmoothedPosition = newRawPos
-                    else { val alpha = 0.3; emaSmoothedPosition = Point(emaSmoothedPosition!!.x + alpha * (newRawPos.x - emaSmoothedPosition!!.x), emaSmoothedPosition!!.y + alpha * (newRawPos.y - emaSmoothedPosition!!.y)) }
+                // 🌟 获取带详细指标的定位结果
+                val locateResult = locator.locateDetailed(liveRssiMap, activeFingerprints, kValue.roundToInt(), useWknn, useAwknn)
+                rawPosition = locateResult?.coordinate
+
+                if (locateResult != null) {
+                    // 🌟 将算出的绝对坐标和最小特征距离 minD1 一起喂给互补引擎，计算动态权重
+                    fusionEngine.updateWknnPosition(locateResult.coordinate, locateResult.d1)
+
+                    if (emaSmoothedPosition == null) emaSmoothedPosition = locateResult.coordinate
+                    else { val alpha = 0.3; emaSmoothedPosition = Point(emaSmoothedPosition!!.x + alpha * (locateResult.coordinate.x - emaSmoothedPosition!!.x), emaSmoothedPosition!!.y + alpha * (locateResult.coordinate.y - emaSmoothedPosition!!.y)) }
                 }
             }
         }
@@ -143,7 +150,8 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
 
         if (!needsRecalculate) {
             var minDistance = Double.MAX_VALUE
-            val searchWindow = kotlin.math.min(globalPlannedPath.size - 1, 3).coerceAtLeast(1)
+            val searchWindow = if (globalPlannedPath.size < 2) 0
+                else kotlin.math.min(globalPlannedPath.size - 1, 3)
 
             for (i in 0 until searchWindow) {
                 val v = globalPlannedPath[i]
@@ -198,20 +206,18 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
         }
     }
 
-    // 🌟 核心算法重构：基于多段线折线累加的【真实行走里程】计算
-    val distanceToTarget = remember(sharedViewModel.currentPath, displayPosition, sharedViewModel.navigationTarget) {
+    // 🌟 修复：移除直线的降级保护，严格依赖实际寻路结果
+    val distanceToTarget = remember(sharedViewModel.currentPath) {
         val path = sharedViewModel.currentPath
         if (path.size > 1) {
             var dist = 0.0
-            // 遍历所有途经节点，累加真实物理折线距离
             for (i in 0 until path.size - 1) {
                 dist += Math.hypot(path[i + 1].x - path[i].x, path[i + 1].y - path[i].y)
             }
             dist
-        } else if (displayPosition != null && sharedViewModel.navigationTarget != null) {
-            // 降级保护：在寻路耗时或无路径时，临时显示直线距离
-            Math.hypot(displayPosition.x - sharedViewModel.navigationTarget!!.x, displayPosition.y - sharedViewModel.navigationTarget!!.y)
-        } else null
+        } else if (path.size == 1) {
+            0.0 // 已到达
+        } else null // 完全没有路径
     }
 
     val gridCoordinates = remember(w, l, s) {
@@ -260,7 +266,13 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
                         }
                     },
                     onTargetSelected = { pt ->
-                        if (sharedViewModel.currentInteractionState == InteractionState.NAVIGATION_MODE) sharedViewModel.navigationTarget = pt
+                        if (sharedViewModel.currentInteractionState == InteractionState.NAVIGATION_MODE) {
+                            val c = (pt.x / s).toInt()
+                            val r = (pt.y / s).toInt()
+                            val isObstacle = sharedViewModel.obstacles.any { it.id == "OBS_${c}_${r}" }
+                            // 🌟 静默拦截墙体点击
+                            if (!isObstacle) { sharedViewModel.navigationTarget = pt }
+                        }
                     },
                     checkIsObstacle = { pt ->
                         val c = (pt.x / s).toInt()
@@ -309,11 +321,27 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
                                 Text("解算算法:", fontWeight = FontWeight.Bold, modifier = Modifier.weight(0.8f))
                                 Box(modifier = Modifier.weight(1.2f)) { SegmentedButton(options = listOf("KNN", "WKNN"), selectedIndex = if (useWknn) 1 else 0, onOptionSelected = { useWknn = (it == 1) }) }
                             }
+
+                            // 🌟 AWKNN UI
                             HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                                Text("K 值 (${kValue.roundToInt()}):", fontWeight = FontWeight.Bold, modifier = Modifier.weight(0.8f))
-                                Slider(value = kValue, onValueChange = { kValue = kotlin.math.round(it) }, valueRange = 1f..7f, steps = 5, modifier = Modifier.weight(1.2f))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("AWKNN 动态截断:", fontWeight = FontWeight.Bold)
+                                    Text("自适应 K 值 ∈ [2, 5]", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                                }
+                                Switch(checked = useAwknn, onCheckedChange = { useAwknn = it })
                             }
+
+                            AnimatedVisibility(visible = !useAwknn) {
+                                Column {
+                                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                        Text("固定 K 值 (${kValue.roundToInt()}):", fontWeight = FontWeight.Bold, modifier = Modifier.weight(0.8f))
+                                        Slider(value = kValue, onValueChange = { kValue = kotlin.math.round(it) }, valueRange = 1f..7f, steps = 5, modifier = Modifier.weight(1.2f))
+                                    }
+                                }
+                            }
+
                             HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                             Text("轨迹优化策略 (消融实验):", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 12.dp))
                             SegmentedButton(options = listOf("纯生数据", "传统平滑", "PDR 融合"), selectedIndex = smoothingStrategy, onOptionSelected = { smoothingStrategy = it })
@@ -394,7 +422,14 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
                                             Spacer(modifier = Modifier.height(12.dp))
                                             Button(onClick = { benchmarkLogger.cancelLogging(); sharedViewModel.isBenchmarking = false; benchmarkProgress = 0f }, modifier = Modifier.fillMaxWidth().height(40.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("取消采样", fontWeight = FontWeight.Bold) }
                                         } else {
-                                            Button(onClick = { sharedViewModel.isBenchmarking = true; benchmarkLogger.startLogging(coroutineScope = coroutineScope, truth = groundTruthPoint!!, liveDevicesFlow = scanner.scannedDevicesFlow, getSelectedMacs = { sharedViewModel.selectedDevices.keys }, locator = locator, activeFingerprints = activeFingerprints, kValue = kValue.roundToInt(), getFused = { fusedPosition }, envLabel = sharedViewModel.currentEnvLabel, targetSamples = 50, onProgress = { benchmarkProgress = it }, onComplete = { sharedViewModel.isBenchmarking = false; benchmarkProgress = 0f; benchmarkLogger.stopAndExport(context) }) }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) { Text("开始定额采样 (50次)", fontWeight = FontWeight.Bold) }
+                                            Button(onClick = {
+                                                sharedViewModel.isBenchmarking = true;
+                                                benchmarkLogger.startLogging(coroutineScope = coroutineScope, truth = groundTruthPoint!!, liveDevicesFlow = scanner.scannedDevicesFlow, getSelectedMacs = { sharedViewModel.selectedDevices.keys }, locator = locator, activeFingerprints = activeFingerprints, kValue = kValue.roundToInt(),
+                                                    getFused = { fusedPosition },
+                                                    getPurePdr = { fusionEngine.purePdrPosition.value },
+                                                    getGainW = { fusionEngine.currentBleWeight.value },
+                                                    envLabel = sharedViewModel.currentEnvLabel, targetSamples = 50, onProgress = { benchmarkProgress = it }, onComplete = { sharedViewModel.isBenchmarking = false; benchmarkProgress = 0f; benchmarkLogger.stopAndExport(context) })
+                                            }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) { Text("开始定额采样 (50次)", fontWeight = FontWeight.Bold) }
                                         }
                                     }
                                 }
@@ -407,7 +442,14 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
                                         Spacer(modifier = Modifier.height(12.dp))
                                         Button(onClick = { benchmarkLogger.cancelLogging(); sharedViewModel.isBenchmarking = false; benchmarkProgress = 0f }, modifier = Modifier.fillMaxWidth().height(40.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("取消采集", fontWeight = FontWeight.Bold) }
                                     } else {
-                                        Button(onClick = { sharedViewModel.isBenchmarking = true; benchmarkProgress = 0f; benchmarkLogger.startTimeBoundLogging(coroutineScope = coroutineScope, liveDevicesFlow = scanner.scannedDevicesFlow, getSelectedMacs = { sharedViewModel.selectedDevices.keys }, locator = locator, activeFingerprints = activeFingerprints, kValue = kValue.roundToInt(), getFused = { fusedPosition }, envLabel = sharedViewModel.currentEnvLabel, durationSeconds = 60, onProgress = { benchmarkProgress = it }, onComplete = { sharedViewModel.isBenchmarking = false; benchmarkProgress = 0f; benchmarkLogger.stopAndExport(context) }) }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) { Text("▶ 开始 60 秒读条采集", fontWeight = FontWeight.Bold) }
+                                        Button(onClick = {
+                                            sharedViewModel.isBenchmarking = true; benchmarkProgress = 0f;
+                                            benchmarkLogger.startTimeBoundLogging(coroutineScope = coroutineScope, liveDevicesFlow = scanner.scannedDevicesFlow, getSelectedMacs = { sharedViewModel.selectedDevices.keys }, locator = locator, activeFingerprints = activeFingerprints, kValue = kValue.roundToInt(),
+                                                getFused = { fusedPosition },
+                                                getPurePdr = { fusionEngine.purePdrPosition.value },
+                                                getGainW = { fusionEngine.currentBleWeight.value },
+                                                envLabel = sharedViewModel.currentEnvLabel, durationSeconds = 60, onProgress = { benchmarkProgress = it }, onComplete = { sharedViewModel.isBenchmarking = false; benchmarkProgress = 0f; benchmarkLogger.stopAndExport(context) })
+                                        }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) { Text("▶ 开始 60 秒读条采集", fontWeight = FontWeight.Bold) }
                                     }
                                 }
                                 2 -> {
@@ -418,7 +460,14 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
                                     } else {
                                         Text("无需点选真值，开启后匀速走动即可画出轨迹", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
                                         Spacer(modifier = Modifier.height(16.dp))
-                                        Button(onClick = { sharedViewModel.isContinuousLogging = true; benchmarkLogger.startContinuousLogging(coroutineScope = coroutineScope, liveDevicesFlow = scanner.scannedDevicesFlow, getSelectedMacs = { sharedViewModel.selectedDevices.keys }, locator = locator, activeFingerprints = activeFingerprints, kValue = kValue.roundToInt(), getFused = { fusedPosition }, envLabel = sharedViewModel.currentEnvLabel) }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))) { Text("▶ 开始录制不限时轨迹", fontWeight = FontWeight.Bold) }
+                                        Button(onClick = {
+                                            sharedViewModel.isContinuousLogging = true;
+                                            benchmarkLogger.startContinuousLogging(coroutineScope = coroutineScope, liveDevicesFlow = scanner.scannedDevicesFlow, getSelectedMacs = { sharedViewModel.selectedDevices.keys }, locator = locator, activeFingerprints = activeFingerprints, kValue = kValue.roundToInt(),
+                                                getFused = { fusedPosition },
+                                                getPurePdr = { fusionEngine.purePdrPosition.value },
+                                                getGainW = { fusionEngine.currentBleWeight.value },
+                                                envLabel = sharedViewModel.currentEnvLabel)
+                                        }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))) { Text("▶ 开始录制不限时轨迹", fontWeight = FontWeight.Bold) }
                                     }
                                 }
                             }
@@ -430,8 +479,6 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
     }
 
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
-    val topBarBgColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.05f).compositeOver(MaterialTheme.colorScheme.surface)
-    val scrolledTopBarBgColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f).compositeOver(MaterialTheme.colorScheme.surface)
 
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
@@ -443,16 +490,31 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
                     displayPosition?.let { pos ->
                         val strategyName = listOf("RAW", "EMA", "PDR")[smoothingStrategy]
 
-                        // 🌟 文案替换为“路程”，代表实际行走路径长度
+                        // 🌟 修复：HUD 文案及无法到达逻辑判定
                         val extraInfo = when (sharedViewModel.currentInteractionState) {
-                            InteractionState.NAVIGATION_MODE -> distanceToTarget?.let { " | 路程: ${String.format("%.1f", it)}m" } ?: ""
+                            InteractionState.NAVIGATION_MODE -> {
+                                if (sharedViewModel.navigationTarget != null) {
+                                    // 目标被设定，且路径为空，说明被墙体彻底堵死
+                                    if (sharedViewModel.currentPath.isEmpty()) {
+                                        " | 无法到达"
+                                    } else {
+                                        distanceToTarget?.let { " | 路程: ${String.format("%.1f", it)}m" } ?: ""
+                                    }
+                                } else ""
+                            }
                             InteractionState.EVALUATION_MODE -> currentError?.let { " | 误差: ${String.format("%.2f", it)}m" } ?: ""
                             else -> ""
                         }
 
+                        // 🌟 修复：HUD 红点警示灯判定
                         val statusIndicatorColor = when (sharedViewModel.currentInteractionState) {
                             InteractionState.EVALUATION_MODE -> if ((currentError ?: 0.0) < 1.5) Color(0xFF4CAF50) else MaterialTheme.colorScheme.error
-                            InteractionState.NAVIGATION_MODE -> if (distanceToTarget != null) Color(0xFF4CAF50) else Color.Gray
+                            InteractionState.NAVIGATION_MODE -> {
+                                if (sharedViewModel.navigationTarget == null) Color.Gray
+                                // 路径计算为空，点亮红灯报错
+                                else if (sharedViewModel.currentPath.isEmpty()) MaterialTheme.colorScheme.error
+                                else Color(0xFF4CAF50)
+                            }
                             else -> Color(0xFF4CAF50)
                         }
 
@@ -480,7 +542,7 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
                 },
                 scrollBehavior = scrollBehavior,
                 windowInsets = WindowInsets.statusBars,
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = topBarBgColor, scrolledContainerColor = scrolledTopBarBgColor, titleContentColor = MaterialTheme.colorScheme.primary)
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface, scrolledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f).compositeOver(MaterialTheme.colorScheme.surface), titleContentColor = MaterialTheme.colorScheme.onSurface)
             )
         }
     ) { innerPadding ->
@@ -504,7 +566,7 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
     if (showClearObstaclesConfirm) {
         AlertDialog(
             onDismissRequest = { showClearObstaclesConfirm = false },
-            title = { Text("清空所有墙体", fontWeight = FontWeight.Bold) },
+            title = { Text("警告", fontWeight = FontWeight.Bold) },
             text = { Text("确定要清空地图上绘制的所有避障墙体吗？该操作不可恢复。") },
             confirmButton = {
                 Button(onClick = {

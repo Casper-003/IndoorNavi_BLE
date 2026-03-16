@@ -11,27 +11,35 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlin.math.cos
 import kotlin.math.sin
 
-// ================= PDR 与 WKNN 互补融合定位引擎 =================
+// ================= 基于特征距离的自适应动态互补融合定位引擎 =================
 class LocationFusionEngine(context: Context) : SensorEventListener {
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private val stepDetector = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
     private val rotationVector = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
 
+    // 全局最优估计坐标 (lastFused)
     private val _fusedPosition = MutableStateFlow<Point?>(null)
     val fusedPosition: StateFlow<Point?> = _fusedPosition.asStateFlow()
 
     private val _currentHeadingFlow = MutableStateFlow(0f)
     val currentHeadingFlow: StateFlow<Float> = _currentHeadingFlow.asStateFlow()
 
+    // 纯推算对比轨迹 (永远不受蓝牙纠偏，为实验三对照组保留)
+    private val _purePdrPosition = MutableStateFlow<Point?>(null)
+    val purePdrPosition: StateFlow<Point?> = _purePdrPosition.asStateFlow()
+
+    // 🌟 新增：暴露动态权重 W_ble 供日志记录
+    private val _currentBleWeight = MutableStateFlow(0.0)
+    val currentBleWeight: StateFlow<Double> = _currentBleWeight.asStateFlow()
+
     private var currentHeading: Double = 0.0
     private var headingOffset: Double = 0.0
 
-    // PDR 步长估计 (米)
     private val stepLength = 0.6
 
-    // 互补滤波权重：PDR推算惯性(0.7) vs 蓝牙绝对纠偏(0.3)
-    private val wknnWeight = 0.3
-    private val pdrWeight = 0.7
+    // 🌟 动态权重经验阈值
+    private val GOOD_SIGNAL_D = 2.0
+    private val BAD_SIGNAL_D = 8.0
 
     fun start() {
         stepDetector?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_FASTEST) }
@@ -42,18 +50,29 @@ class LocationFusionEngine(context: Context) : SensorEventListener {
         sensorManager.unregisterListener(this)
     }
 
-    // 🌟 核心修正 1：剥离互补滤波的触发时机
-    // 只有当接收到新的【绝对物理坐标 (WKNN)】时，才对现有的 PDR 轨迹进行加权拉扯纠偏
-    fun updateWknnPosition(wknnPoint: Point) {
-        val currentFused = _fusedPosition.value
-        if (currentFused == null) {
-            _fusedPosition.value = wknnPoint
+    // 🌟 融合阶段 (Update - 由 AWKNN 蓝牙扫描触发)
+    fun updateWknnPosition(blePoint: Point, minD1: Double) = synchronized(this) {
+        val lastFused = _fusedPosition.value
+        if (lastFused == null) {
+            _fusedPosition.value = blePoint
+            _purePdrPosition.value = blePoint
+            _currentBleWeight.value = 1.0
         } else {
-            // 将旧的平滑轨迹向新的绝对坐标靠拢
-            _fusedPosition.value = Point(
-                x = currentFused.x * pdrWeight + wknnPoint.x * wknnWeight,
-                y = currentFused.y * pdrWeight + wknnPoint.y * wknnWeight
-            )
+            // 1. 计算动态信任权重 (Linear Mapping)
+            val wBle = when {
+                minD1 <= GOOD_SIGNAL_D -> 0.9
+                minD1 >= BAD_SIGNAL_D -> 0.1
+                else -> 0.9 - ((minD1 - GOOD_SIGNAL_D) / (BAD_SIGNAL_D - GOOD_SIGNAL_D)) * (0.9 - 0.1)
+            }
+            _currentBleWeight.value = wBle
+
+            // 2. 极简互补融合公式 (Complementary Fusion)
+            // 此时的 lastFused 已经包含了 PDR 累加的位移
+            val fusedX = wBle * blePoint.x + (1.0 - wBle) * lastFused.x
+            val fusedY = wBle * blePoint.y + (1.0 - wBle) * lastFused.y
+
+            // 3. 状态更新
+            _fusedPosition.value = Point(fusedX, fusedY)
         }
     }
 
@@ -75,17 +94,24 @@ class LocationFusionEngine(context: Context) : SensorEventListener {
             }
 
             Sensor.TYPE_STEP_DETECTOR -> {
-                val currentFused = _fusedPosition.value
+                synchronized(this) {
+                    val lastFused = _fusedPosition.value
+                    val currentPurePdr = _purePdrPosition.value
 
-                if (currentFused != null) {
-                    val mapHeading = currentHeading + headingOffset
+                    if (lastFused != null && currentPurePdr != null) {
+                        val mapHeading = currentHeading + headingOffset
 
-                    // 🌟 核心修正 2：步进推算绝对信任微机电系统 (MEMS) 的相对位移
-                    // 彻底废除步进时的蓝牙强行加权，告别“皮筋回弹”
-                    val pdrX = currentFused.x + stepLength * sin(mapHeading)
-                    val pdrY = currentFused.y - stepLength * cos(mapHeading)
+                        // 计算物理位移 deltaX 和 deltaY
+                        val dx = stepLength * sin(mapHeading)
+                        val dy = -stepLength * cos(mapHeading)
 
-                    _fusedPosition.value = Point(pdrX, pdrY)
+                        // 🌟 预测阶段 (Prediction)
+                        // 将推算坐标作为临时最优解直接覆写回全局状态
+                        _fusedPosition.value = Point(lastFused.x + dx, lastFused.y + dy)
+
+                        // 纯 PDR 对照组同步发散
+                        _purePdrPosition.value = Point(currentPurePdr.x + dx, currentPurePdr.y + dy)
+                    }
                 }
             }
         }

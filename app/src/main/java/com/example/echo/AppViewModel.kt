@@ -126,13 +126,11 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.IO) {
             if (shouldErase && exists) {
                 obstacles.find { it.id == id }?.let { obstacleDao.deleteObstacle(it) }
-                obstacles = obstacles.filter { it.id != id }
             } else if (!shouldErase && !exists) {
                 val alignedX = c * gridResolution
                 val alignedY = r * gridResolution
                 val newObs = ObstacleEntity(id, alignedX, alignedY)
                 obstacleDao.insertObstacle(newObs)
-                obstacles = obstacles + newObs
             }
         }
     }
@@ -140,7 +138,6 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     fun clearAllObstacles() {
         viewModelScope.launch(Dispatchers.IO) {
             obstacleDao.clearAllObstacles()
-            obstacles = emptyList()
         }
     }
 

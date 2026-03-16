@@ -5,7 +5,7 @@ import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.hypot
 
-// ================= A* 离散空间网格寻路引擎 =================
+// ================= A* 离散空间网格寻路引擎 (完美平滑优化版) =================
 class AStarPathfinder {
 
     data class Node(
@@ -62,8 +62,6 @@ class AStarPathfinder {
         gridResolution: Double,
         obstacles: List<Point>
     ): List<Point> {
-        // 🌟 核心修复 1：去掉 `+ 1`！
-        // 彻底关闭“外太空网格”漏洞，把 A* 算法的搜索范围死死锁在物理地图内部！
         val cols = ceil(spaceWidth / gridResolution).toInt()
         val rows = ceil(spaceLength / gridResolution).toInt()
 
@@ -83,7 +81,6 @@ class AStarPathfinder {
         val rawTargetC = floor(target.x / gridResolution).toInt()
         val rawTargetR = floor(target.y / gridResolution).toInt()
 
-        // 使用 BFS 确保起终点绝对安全，不怕 PDR 漂移
         val safeStart = findNearestWalkable(rawStartC, rawStartR, cols, rows, isObstacle) ?: return emptyList()
         val safeTarget = findNearestWalkable(rawTargetC, rawTargetR, cols, rows, isObstacle) ?: return emptyList()
 
@@ -126,9 +123,6 @@ class AStarPathfinder {
                 if (neighborCol !in 0 until cols || neighborRow !in 0 until rows) continue
                 if (isObstacle[neighborCol][neighborRow]) continue
 
-                // 🌟 核心修复 2：恢复强硬的 `||` 穿模拦截
-                // 只要相邻两格有【任何一格】是墙壁，就禁止走对角线！
-                // 这强迫 A* 遇到转角必须走 90° 拐角，为后续的拉线平滑提供完美的居中基础
                 if (cost > 1.0) {
                     if (isObstacle[current.col][neighborRow] || isObstacle[neighborCol][current.row]) {
                         continue
@@ -187,6 +181,7 @@ class AStarPathfinder {
             physicalPath[physicalPath.size - 1] = Point(target.x.coerceIn(safeMinX, safeMaxX), target.y.coerceIn(safeMinY, safeMaxY))
         }
 
+        // 🌟 启用平滑算法
         return smoothPath(physicalPath, gridResolution, isObstacle, cols, rows)
     }
 
@@ -194,6 +189,7 @@ class AStarPathfinder {
         val dx = kotlin.math.abs(c1 - c2).toDouble()
         val dy = kotlin.math.abs(r1 - r2).toDouble()
         val h = (dx + dy) + (1.414 - 2.0) * minOf(dx, dy)
+        // 🌟 启用 Tie-breaker 惩罚项
         return h * 1.001
     }
 
@@ -209,8 +205,6 @@ class AStarPathfinder {
             for (i in currentIndex + 2 until path.size) {
                 if (hasLineOfSight(path[currentIndex], path[i], s, isObstacle, cols, rows)) {
                     furthest = i
-                } else {
-                    break
                 }
             }
             smoothed.add(path[furthest])
@@ -225,10 +219,6 @@ class AStarPathfinder {
 
         val stepSize = s / 10.0
         val steps = ceil(dist / stepSize).toInt()
-
-        // 🌟 核心修复 3：随地图格子自动调节的巨型体积判定！
-        // 强制占据格子 80% 的宽度 (0.4 * s * 2 = 0.8s)。
-        // 这赋予了导航线真实的物理体积，它再也不能擦着棱角抄近路了，必须乖乖走在正中间。
         val margin = s * 0.4
 
         for (i in 0..steps) {
@@ -252,10 +242,11 @@ class AStarPathfinder {
                 val c = floor(pt.x / s).toInt()
                 val r = floor(pt.y / s).toInt()
 
-                // 如果胖射线的边缘探出了地图，直接判定失败，绝不借道
-                if (c !in 0 until cols || r !in 0 until rows) return false
-                // 如果蹭到实心墙，立刻判定失败
-                if (isObstacle[c][r]) return false
+                // 🌟 核心修复区：允许胖射线的边缘探出地图之外
+                // 如果坐标在有效网格内，才去检查有没有实体墙壁
+                if (c in 0 until cols && r in 0 until rows) {
+                    if (isObstacle[c][r]) return false
+                }
             }
         }
         return true
