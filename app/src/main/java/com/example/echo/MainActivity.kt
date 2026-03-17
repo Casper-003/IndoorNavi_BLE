@@ -1,6 +1,5 @@
 package com.example.echo
 
-import android.Manifest
 import android.annotation.SuppressLint
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -30,6 +29,10 @@ import androidx.core.view.WindowCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import android.graphics.Color as AndroidColor
+import android.Manifest
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 
 @SuppressLint("InlinedApi")
 class MainActivity : ComponentActivity() {
@@ -43,7 +46,7 @@ class MainActivity : ComponentActivity() {
         )
         setContent { MainAppRouter() }
         permissionLauncher.launch(
-            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACTIVITY_RECOGNITION)
+            arrayOf(Manifest.permission.CAMERA, Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACTIVITY_RECOGNITION)
         )
     }
 }
@@ -130,6 +133,7 @@ fun MainAppRouter() {
     MaterialTheme(colorScheme = colorScheme) { Surface(color = MaterialTheme.colorScheme.background) { MainAppScreen(sharedViewModel) } }
 }
 
+
 @Composable
 fun MainAppScreen(sharedViewModel: SharedViewModel) {
     val pagerState = rememberPagerState(pageCount = { 4 })
@@ -137,38 +141,44 @@ fun MainAppScreen(sharedViewModel: SharedViewModel) {
 
     Scaffold(
         bottomBar = {
-            NavigationBar(
-                modifier = Modifier.height(72.dp), // 🌟 调整底栏高度
-                containerColor = MaterialTheme.colorScheme.surface,
-                tonalElevation = 0.dp
+            // 🌟 核心修复：根据全局状态控制底部导航栏显隐，并加入丝滑的下潜动画
+            AnimatedVisibility(
+                visible = sharedViewModel.isBottomBarVisible,
+                enter = slideInVertically(initialOffsetY = { it }), // 从底部滑入
+                exit = slideOutVertically(targetOffsetY = { it })   // 向底部滑出隐藏
             ) {
-                val navIcons = listOf(Icons.Rounded.CellTower, Icons.Rounded.Fingerprint, Icons.Rounded.Explore, Icons.Rounded.Settings)
-                val navLabels = listOf("基站", "指纹", "定位", "设置")
-                val selectedTabIndex = pagerState.targetPage
+                NavigationBar(
+                    modifier = Modifier.height(72.dp),
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 0.dp
+                ) {
+                    val navIcons = listOf(Icons.Rounded.CellTower, Icons.Rounded.Fingerprint, Icons.Rounded.Explore, Icons.Rounded.Settings)
+                    val navLabels = listOf("基站", "指纹", "定位", "设置")
+                    val selectedTabIndex = pagerState.targetPage
 
-                navIcons.forEachIndexed { index, icon ->
-                    val isSelected = selectedTabIndex == index
-                    NavigationBarItem(
-                        selected = isSelected,
-                        onClick = { coroutineScope.launch { pagerState.animateScrollToPage(index) } },
-                        icon = { Icon(imageVector = icon, contentDescription = navLabels[index]) },
-                        label = { Text(text = navLabels[index], style = MaterialTheme.typography.labelSmall, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium) },
-                        alwaysShowLabel = true,
-                        colors = NavigationBarItemDefaults.colors(
-                            indicatorColor = MaterialTheme.colorScheme.primary,
-                            selectedIconColor = MaterialTheme.colorScheme.onPrimary,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    navIcons.forEachIndexed { index, icon ->
+                        val isSelected = selectedTabIndex == index
+                        NavigationBarItem(
+                            selected = isSelected,
+                            onClick = { coroutineScope.launch { pagerState.animateScrollToPage(index) } },
+                            icon = { Icon(imageVector = icon, contentDescription = navLabels[index]) },
+                            label = { Text(text = navLabels[index], style = MaterialTheme.typography.labelSmall, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium) },
+                            alwaysShowLabel = true,
+                            colors = NavigationBarItemDefaults.colors(
+                                indicatorColor = MaterialTheme.colorScheme.primary,
+                                selectedIconColor = MaterialTheme.colorScheme.onPrimary,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         )
-                    )
+                    }
                 }
             }
         }
     ) { innerPadding ->
         HorizontalPager(
             state = pagerState,
-            // 🌟 核心修复：在此处统一消费 Bottom Padding，解决地图被挡住的问题
             modifier = Modifier.fillMaxSize().padding(bottom = innerPadding.calculateBottomPadding()),
             userScrollEnabled = false,
             beyondViewportPageCount = 3

@@ -52,6 +52,7 @@ import kotlin.math.min
 @Composable
 fun InteractiveRadarMap(
     modifier: Modifier = Modifier,
+    mapPolygon: List<Point> = emptyList(), // 🌟 新增：接收 AR 测绘多边形
     gridCoordinates: List<Point>,
     recordedPoints: List<Point>,
     selectedPoint: Point? = null,
@@ -194,10 +195,31 @@ fun InteractiveRadarMap(
             for (r in startRow..endRow) { val cy = paddingPx + (r * gridResolution * scaleY).toFloat(); drawLine(color = gridLineColor, start = Offset(paddingPx + (startCol * gridResolution * scaleX).toFloat(), cy), end = Offset(paddingPx + (endCol * gridResolution * scaleX).toFloat(), cy), strokeWidth = strokeWidth, pathEffect = dashPathEffect) }
             for (c in startCol..endCol) { for (r in startRow..endRow) { val cx = paddingPx + (c * gridResolution * scaleX).toFloat(); val cy = paddingPx + (r * gridResolution * scaleY).toFloat(); drawCircle(color = Color.Gray.copy(alpha = 0.15f), radius = 3.dp.toPx(), center = Offset(cx, cy)) } }
 
-            val roomTopLeft = Offset(paddingPx, paddingPx)
-            val roomSize = Size((maxX * scaleX).toFloat(), (maxY * scaleY).toFloat())
-            drawRect(color = themePrimaryColor.copy(alpha = 0.03f), topLeft = roomTopLeft, size = roomSize)
-            drawRect(color = themePrimaryColor.copy(alpha = 0.35f), topLeft = roomTopLeft, size = roomSize, style = Stroke(width = 2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(20f, 20f), 0f)))
+            // 🌟 核心渲染升级：抛弃矩形，绘制真实的 AR 多边形边界！
+            if (mapPolygon.isNotEmpty()) {
+                val polyPath = Path().apply {
+                    mapPolygon.forEachIndexed { index, pt ->
+                        val px = paddingPx + (pt.x * scaleX).toFloat()
+                        val py = paddingPx + (pt.y * scaleY).toFloat()
+                        if (index == 0) moveTo(px, py) else lineTo(px, py)
+                    }
+                    close()
+                }
+                // 填充内部光晕
+                drawPath(path = polyPath, color = themePrimaryColor.copy(alpha = 0.05f))
+                // 绘制虚线边界墙体
+                drawPath(
+                    path = polyPath,
+                    color = themePrimaryColor.copy(alpha = 0.5f),
+                    style = Stroke(width = 3.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(15f, 15f), 0f))
+                )
+            } else {
+                // 兜底逻辑：如果不是 AR 生成的图，依然画矩形包围盒
+                val roomTopLeft = Offset(paddingPx, paddingPx)
+                val roomSize = Size((maxX * scaleX).toFloat(), (maxY * scaleY).toFloat())
+                drawRect(color = themePrimaryColor.copy(alpha = 0.03f), topLeft = roomTopLeft, size = roomSize)
+                drawRect(color = themePrimaryColor.copy(alpha = 0.35f), topLeft = roomTopLeft, size = roomSize, style = Stroke(width = 2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(20f, 20f), 0f)))
+            }
 
             val obsColor = Color.Gray.copy(alpha = 0.7f)
             obstacles.forEach { obs -> drawRect(color = obsColor, topLeft = Offset(paddingPx + ((obs.x / gridResolution).toInt() * gridResolution * scaleX).toFloat(), paddingPx + ((obs.y / gridResolution).toInt() * gridResolution * scaleY).toFloat()), size = Size((gridResolution * scaleX).toFloat(), (gridResolution * scaleY).toFloat())) }

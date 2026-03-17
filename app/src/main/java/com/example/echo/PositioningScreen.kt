@@ -79,10 +79,17 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
     var emaSmoothedPosition by remember { mutableStateOf<Point?>(null) }
     var currentError by remember { mutableStateOf<Double?>(null) }
 
-    val w = sharedViewModel.spaceWidth.toFloatOrNull() ?: 10f
-    val l = sharedViewModel.spaceLength.toFloatOrNull() ?: 10f
-    // 🌟 防崩溃：强制限制网格间距最小为 0.1，防止死循环导致内存溢出
+    // 🌟 动态提取数据库中激活地图的拓扑数据
+    val currentMap = sharedViewModel.currentMap
+    val w = currentMap?.width?.toFloat() ?: 10f
+    val l = currentMap?.length?.toFloat() ?: 10f
+    // 防崩溃：强制限制网格间距最小为 0.1
     val s = (sharedViewModel.gridSpacing.toFloatOrNull() ?: 2f).coerceAtLeast(0.1f)
+
+    // 解析出多边形坐标
+    val mapPolygon = remember(currentMap) {
+        Converters().toPointList(currentMap?.polygonBounds ?: "")
+    }
 
     var lastUiBleHash by remember { mutableLongStateOf(0L) }
 
@@ -98,12 +105,12 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
                 lastUiBleHash = currentHash
                 val liveRssiMap = sharedViewModel.selectedDevices.keys.associateWith { mac -> liveDevices.find { it.macAddress == mac }?.smoothedRssi ?: -100 }
 
-                // 🌟 获取带详细指标的定位结果
+                // 获取带详细指标的定位结果
                 val locateResult = locator.locateDetailed(liveRssiMap, activeFingerprints, kValue.roundToInt(), useWknn, useAwknn)
                 rawPosition = locateResult?.coordinate
 
                 if (locateResult != null) {
-                    // 🌟 将算出的绝对坐标和最小特征距离 minD1 一起喂给互补引擎，计算动态权重
+                    // 将算出的绝对坐标和最小特征距离 minD1 一起喂给互补引擎，计算动态权重
                     fusionEngine.updateWknnPosition(locateResult.coordinate, locateResult.d1)
 
                     if (emaSmoothedPosition == null) emaSmoothedPosition = locateResult.coordinate
@@ -151,7 +158,7 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
         if (!needsRecalculate) {
             var minDistance = Double.MAX_VALUE
             val searchWindow = if (globalPlannedPath.size < 2) 0
-                else kotlin.math.min(globalPlannedPath.size - 1, 3)
+            else kotlin.math.min(globalPlannedPath.size - 1, 3)
 
             for (i in 0 until searchWindow) {
                 val v = globalPlannedPath[i]
@@ -180,9 +187,11 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
 
         if (needsRecalculate) {
             withContext(Dispatchers.Default) {
+                // 🌟 使用全新升级的带多边形检测的 A*
                 val path = pathfinder.findPath(
-                    start = start, target = target,
-                    spaceWidth = w.toDouble(), spaceLength = l.toDouble(),
+                    start = start,
+                    target = target,
+                    mapPolygon = mapPolygon, // 传入刚刚解析的多边形
                     gridResolution = s.toDouble(),
                     obstacles = sharedViewModel.obstacles.map { Point(it.x, it.y) }
                 )
@@ -206,7 +215,6 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
         }
     }
 
-    // 🌟 修复：移除直线的降级保护，严格依赖实际寻路结果
     val distanceToTarget = remember(sharedViewModel.currentPath) {
         val path = sharedViewModel.currentPath
         if (path.size > 1) {
@@ -247,6 +255,7 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
                 }
             } else {
                 InteractiveRadarMap(
+                    mapPolygon = mapPolygon, // 🌟 传给地图 UI 进行渲染
                     gridCoordinates = gridCoordinates,
                     recordedPoints = activeFingerprints.map { it.coordinate },
                     selectedPoint = groundTruthPoint,
@@ -270,7 +279,7 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
                             val c = (pt.x / s).toInt()
                             val r = (pt.y / s).toInt()
                             val isObstacle = sharedViewModel.obstacles.any { it.id == "OBS_${c}_${r}" }
-                            // 🌟 静默拦截墙体点击
+                            // 静默拦截墙体点击
                             if (!isObstacle) { sharedViewModel.navigationTarget = pt }
                         }
                     },
@@ -322,7 +331,6 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
                                 Box(modifier = Modifier.weight(1.2f)) { SegmentedButton(options = listOf("KNN", "WKNN"), selectedIndex = if (useWknn) 1 else 0, onOptionSelected = { useWknn = (it == 1) }) }
                             }
 
-                            // 🌟 AWKNN UI
                             HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                                 Column(modifier = Modifier.weight(1f)) {
@@ -490,11 +498,9 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
                     displayPosition?.let { pos ->
                         val strategyName = listOf("RAW", "EMA", "PDR")[smoothingStrategy]
 
-                        // 🌟 修复：HUD 文案及无法到达逻辑判定
                         val extraInfo = when (sharedViewModel.currentInteractionState) {
                             InteractionState.NAVIGATION_MODE -> {
                                 if (sharedViewModel.navigationTarget != null) {
-                                    // 目标被设定，且路径为空，说明被墙体彻底堵死
                                     if (sharedViewModel.currentPath.isEmpty()) {
                                         " | 无法到达"
                                     } else {
@@ -506,12 +512,10 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
                             else -> ""
                         }
 
-                        // 🌟 修复：HUD 红点警示灯判定
                         val statusIndicatorColor = when (sharedViewModel.currentInteractionState) {
                             InteractionState.EVALUATION_MODE -> if ((currentError ?: 0.0) < 1.5) Color(0xFF4CAF50) else MaterialTheme.colorScheme.error
                             InteractionState.NAVIGATION_MODE -> {
                                 if (sharedViewModel.navigationTarget == null) Color.Gray
-                                // 路径计算为空，点亮红灯报错
                                 else if (sharedViewModel.currentPath.isEmpty()) MaterialTheme.colorScheme.error
                                 else Color(0xFF4CAF50)
                             }
