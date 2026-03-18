@@ -69,10 +69,10 @@ com.example.indoornavi/
 └── ...
 ```
 ##  关于此软件
-* 开发者: Casper-003 & Gemini
+* 开发者: Casper-003 , Gemini , Claude
 * 联系: casper-003@outlook.com
 * 本项目为LNU本科毕业设计成果。
 
 ##  开源协议
 This project is licensed under the MIT License.
-*Developed with ❤️ by Casper-003 & Gemini*
+*Developed with ❤️ by Casper-003 , Gemini & Claude Code*
