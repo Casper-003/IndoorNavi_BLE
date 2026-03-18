@@ -1,4 +1,4 @@
-#  Echo (prev.IndoorNavi)
+#  Echo (前身为 IndoorNavi)
 
 ![Kotlin](https://img.shields.io/badge/Kotlin-1.9.0-blue.svg?logo=kotlin)
 ![Jetpack Compose](https://img.shields.io/badge/Jetpack%20Compose-Material%203-4CAF50.svg?logo=android)
@@ -75,4 +75,4 @@ com.example.indoornavi/
 
 ##  开源协议
 This project is licensed under the MIT License.
-*Developed with ❤️ by Casper-003 , Gemini & Claude Code*
+## *Developed with ❤️ by Casper-003 , Gemini & Claude Code*
