@@ -16,8 +16,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Undo
-import androidx.compose.material.icons.filled.AddLocationAlt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
@@ -41,6 +39,7 @@ import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.atan2
 
 // =====================================================================================
 // AR 扫描界面
@@ -57,14 +56,25 @@ fun ArScannerScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val coroutineScope = rememberCoroutineScope()
 
-    var polygonVertices by remember { mutableStateOf(listOf<Point>()) }
     var isTracking by remember { mutableStateOf(false) }
-    var currentHitPoint by remember { mutableStateOf<Point?>(null) }
-    // 控制整个界面的淡入
+    val collectedPoints = remember { mutableStateListOf<Point>() }
+    // 用于去重的网格 key 集合（分辨率 0.1m）
+    val occupiedCells = remember { HashSet<Long>() }
+    // Mini-Map 显示用快照，每 500ms 更新，避免高频重组
+    var pointCloudSnapshot by remember { mutableStateOf(listOf<Point>()) }
     var isVisible by remember { mutableStateOf(false) }
 
+    // 每 500ms 刷新一次 Mini-Map 快照
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(500)
+            if (collectedPoints.isNotEmpty()) {
+                pointCloudSnapshot = collectedPoints.toList()
+            }
+        }
+    }
+
     val sessionHolder = remember { ArSessionHolder() }
-    // GLSurfaceView 实例引用，用于手动触发 onResume/onPause
     var glView by remember { mutableStateOf<ArGLSurfaceView?>(null) }
 
     // 创建 AR Session
@@ -104,11 +114,19 @@ fun ArScannerScreen(
                 factory = { ctx ->
                     ArGLSurfaceView(ctx, sessionHolder).also { view ->
                         glView = view
-                        view.onTrackingChanged = { tracking, hitPoint ->
+                        view.onTrackingChanged = { tracking, _ ->
                             isTracking = tracking
-                            currentHitPoint = hitPoint
                         }
-                        // AndroidView 创建时 Lifecycle 已是 RESUMED，手动触发一次
+                        view.onPointCloudUpdated = { points ->
+                            // 网格去重：只保留未见过的格子中心点（分辨率 0.1m）
+                            val newPts = points.filter { p ->
+                                val cx = (p.x / 0.1).toLong()
+                                val cz = (p.y / 0.1).toLong()
+                                val key = cx.shl(32) or (cz and 0xFFFFFFFFL)
+                                occupiedCells.add(key)
+                            }
+                            if (newPts.isNotEmpty()) collectedPoints.addAll(newPts)
+                        }
                         if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
                             view.onResume()
                         }
@@ -117,34 +135,24 @@ fun ArScannerScreen(
                 modifier = Modifier.fillMaxSize()
             )
 
-            // ── 2. 专业准星：四角框线样式 ────────────────────────────────────────
-            val crosshairColor = if (currentHitPoint != null) Color(0xFF00E676) else Color.White.copy(alpha = 0.8f)
-            Canvas(
-                modifier = Modifier.align(Alignment.Center).size(56.dp)
-            ) {
+            // ── 2. 准星 ──────────────────────────────────────────────────────────
+            Canvas(modifier = Modifier.align(Alignment.Center).size(56.dp)) {
                 val s = size.minDimension
-                val arm = s * 0.30f   // 角线长度
-                val gap = s * 0.08f   // 中心留空
+                val arm = s * 0.30f
                 val sw = 2.5f
-
-                val corners = listOf(
+                val color = Color.White.copy(alpha = 0.8f)
+                listOf(
                     Offset(0f, 0f) to listOf(Offset(arm, 0f), Offset(0f, arm)),
                     Offset(s, 0f) to listOf(Offset(s - arm, 0f), Offset(s, arm)),
                     Offset(0f, s) to listOf(Offset(arm, s), Offset(0f, s - arm)),
                     Offset(s, s) to listOf(Offset(s - arm, s), Offset(s, s - arm))
-                )
-                corners.forEach { (pivot, ends) ->
-                    ends.forEach { end ->
-                        drawLine(crosshairColor, pivot, end, strokeWidth = sw)
-                    }
-                }
-                // 中心点
-                drawCircle(crosshairColor, radius = 2.dp.toPx(), center = Offset(s / 2f, s / 2f))
+                ).forEach { (pivot, ends) -> ends.forEach { end -> drawLine(color, pivot, end, sw) } }
+                drawCircle(color, radius = 2.dp.toPx(), center = Offset(s / 2f, s / 2f))
             }
 
             // ── 3. 右上角 Mini-Map ───────────────────────────────────────────────
             AnimatedVisibility(
-                visible = polygonVertices.isNotEmpty(),
+                visible = pointCloudSnapshot.isNotEmpty(),
                 enter = fadeIn(tween(300)),
                 modifier = Modifier.align(Alignment.TopEnd).padding(top = 52.dp, end = 16.dp)
             ) {
@@ -154,14 +162,15 @@ fun ArScannerScreen(
                     shape = RoundedCornerShape(12.dp)
                 ) {
                     MiniMapCanvas(
-                        vertices = polygonVertices,
-                        cursor = currentHitPoint,
+                        vertices = emptyList(),
+                        cursor = null,
+                        pointCloud = pointCloudSnapshot,
                         modifier = Modifier.fillMaxSize().padding(10.dp)
                     )
                 }
             }
 
-            // ── 4. 左上角：退出按钮 ──────────────────────────────────────────────
+            // ── 4. 左上角：取消按钮 ──────────────────────────────────────────────
             IconButton(
                 onClick = {
                     coroutineScope.launch {
@@ -175,7 +184,7 @@ fun ArScannerScreen(
                     .padding(top = 48.dp, start = 12.dp)
                     .background(Color.Black.copy(alpha = 0.45f), CircleShape)
             ) {
-                Icon(Icons.Default.Close, contentDescription = "退出扫描", tint = Color.White)
+                Icon(Icons.Default.Close, contentDescription = "取消", tint = Color.White)
             }
 
             // ── 5. 顶部居中：状态提示条 ──────────────────────────────────────────
@@ -187,15 +196,17 @@ fun ArScannerScreen(
                     .padding(horizontal = 16.dp, vertical = 6.dp)
             ) {
                 Text(
-                    text = if (!isTracking) "移动设备以检测地面平面"
-                           else if (polygonVertices.isEmpty()) "检测到平面 — 标记第一个角点"
-                           else "已标记 ${polygonVertices.size} 个角点",
+                    text = when {
+                        !isTracking -> "请缓慢移动设备，扫描地面"
+                        collectedPoints.size < 50 -> "沿房间边缘缓慢行走，收集地图数据…"
+                        else -> "数据充足，可完成扫描（已采集 ${collectedPoints.size} 点）"
+                    },
                     style = MaterialTheme.typography.labelMedium,
                     color = Color.White.copy(alpha = 0.9f)
                 )
             }
 
-            // ── 6. 底部操作栏：固定三列，主按钮始终居中 ─────────────────────────
+            // ── 6. 底部操作栏 ────────────────────────────────────────────────────
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -204,84 +215,61 @@ fun ArScannerScreen(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 左槽：撤销按钮
-                Box(modifier = Modifier.size(52.dp), contentAlignment = Alignment.Center) {
-                    androidx.compose.animation.AnimatedVisibility(
-                        visible = polygonVertices.isNotEmpty(),
-                        enter = fadeIn(tween(200)),
-                        exit = fadeOut(tween(200))
-                    ) {
-                        IconButton(
-                            onClick = { polygonVertices = polygonVertices.dropLast(1) },
-                            modifier = Modifier
-                                .size(52.dp)
-                                .background(Color.Black.copy(alpha = 0.45f), CircleShape)
-                        ) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.Undo,
-                                contentDescription = "撤销",
-                                tint = Color.White,
-                                modifier = Modifier.size(22.dp)
-                            )
+                // 左槽：取消
+                IconButton(
+                    onClick = {
+                        coroutineScope.launch {
+                            sessionHolder.pause()
+                            delay(200)
+                            onCancel()
                         }
-                    }
-                }
-
-                // 中槽：主操作按钮（标记角点）
-                Box(
+                    },
                     modifier = Modifier
-                        .size(72.dp)
-                        .background(
-                            if (currentHitPoint != null) MaterialTheme.colorScheme.primary
-                            else Color.White.copy(alpha = 0.15f),
-                            CircleShape
-                        ),
-                    contentAlignment = Alignment.Center
+                        .size(52.dp)
+                        .background(Color.Black.copy(alpha = 0.45f), CircleShape)
                 ) {
-                    IconButton(
-                        onClick = {
-                            currentHitPoint?.let { polygonVertices = polygonVertices + it }
-                        },
-                        enabled = currentHitPoint != null,
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        Icon(
-                            Icons.Default.AddLocationAlt,
-                            contentDescription = "标记角点",
-                            tint = if (currentHitPoint != null) Color.White else Color.White.copy(alpha = 0.35f),
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
+                    Icon(Icons.Default.Close, contentDescription = "取消", tint = Color.White, modifier = Modifier.size(22.dp))
                 }
 
-                // 右槽：完成按钮
-                Box(modifier = Modifier.size(52.dp), contentAlignment = Alignment.Center) {
-                    androidx.compose.animation.AnimatedVisibility(
-                        visible = polygonVertices.size >= 3,
-                        enter = fadeIn(tween(200)),
-                        exit = fadeOut(tween(200))
-                    ) {
-                        IconButton(
-                            onClick = {
-                                val captured = polygonVertices
-                                coroutineScope.launch {
-                                    sessionHolder.pause()
-                                    delay(200)
-                                    onComplete(captured)
-                                }
-                            },
-                            modifier = Modifier
-                                .size(52.dp)
-                                .background(Color(0xFF00897B), CircleShape)
-                        ) {
-                            Icon(
-                                Icons.Default.Check,
-                                contentDescription = "完成扫描",
-                                tint = Color.White,
-                                modifier = Modifier.size(22.dp)
-                            )
+                // 中槽：占位，保持布局对称
+                Spacer(modifier = Modifier.size(72.dp))
+
+                // 右槽：完成（≥50 个点才激活）
+                val canFinish = collectedPoints.size >= 50
+                IconButton(
+                    onClick = {
+                        val pts = collectedPoints.toList()
+                        val flatPoints = FloatArray(pts.size * 2) { i ->
+                            if (i % 2 == 0) pts[i / 2].x.toFloat() else pts[i / 2].y.toFloat()
                         }
-                    }
+                        val raw = MapProcessor.extractBoundaryPolygon(flatPoints, 0.15f)
+                        val boundary = if (raw.size >= 6) {
+                            (0 until raw.size / 2).map { i ->
+                                Point(raw[i * 2].toDouble(), raw[i * 2 + 1].toDouble())
+                            }
+                        } else {
+                            extractBoundaryPolygon(pts) // 回退到 Kotlin 实现
+                        }
+                        coroutineScope.launch {
+                            sessionHolder.pause()
+                            delay(200)
+                            onComplete(boundary)
+                        }
+                    },
+                    enabled = canFinish,
+                    modifier = Modifier
+                        .size(52.dp)
+                        .background(
+                            if (canFinish) Color(0xFF00897B) else Color.White.copy(alpha = 0.15f),
+                            CircleShape
+                        )
+                ) {
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = "完成扫描",
+                        tint = if (canFinish) Color.White else Color.White.copy(alpha = 0.35f),
+                        modifier = Modifier.size(22.dp)
+                    )
                 }
             }
         }
@@ -331,10 +319,16 @@ class ArGLSurfaceView(context: Context, private val holder: ArSessionHolder) :
     GLSurfaceView(context) {
 
     var onTrackingChanged: ((Boolean, Point?) -> Unit)? = null
+    var onPointCloudUpdated: ((List<Point>) -> Unit)? = null
 
-    private val renderer = ArRenderer(holder, context) { tracking, hitPoint ->
-        post { onTrackingChanged?.invoke(tracking, hitPoint) }
-    }
+    private val renderer = ArRenderer(holder, context,
+        onFrameUpdate = { tracking, hitPoint ->
+            post { onTrackingChanged?.invoke(tracking, hitPoint) }
+        },
+        onPointCloud = { points ->
+            post { onPointCloudUpdated?.invoke(points) }
+        }
+    )
 
     init {
         preserveEGLContextOnPause = true
@@ -360,7 +354,8 @@ class ArGLSurfaceView(context: Context, private val holder: ArSessionHolder) :
 class ArRenderer(
     private val sessionHolder: ArSessionHolder,
     context: Context,
-    private val onFrameUpdate: (tracking: Boolean, hitPoint: Point?) -> Unit
+    private val onFrameUpdate: (tracking: Boolean, hitPoint: Point?) -> Unit,
+    private val onPointCloud: (List<Point>) -> Unit
 ) : GLSurfaceView.Renderer {
 
     private val rotationHelper = DisplayRotationHelper(context)
@@ -399,22 +394,53 @@ class ArRenderer(
             var hitPoint: Point? = null
 
             if (isTracking) {
-                // 绘制检测到的平面
-                val projMatrix = FloatArray(16)
-                val viewMatrix = FloatArray(16)
-                camera.getProjectionMatrix(projMatrix, 0, 0.1f, 100f)
-                camera.getViewMatrix(viewMatrix, 0)
-                val planes = session.getAllTrackables(Plane::class.java)
-                    .filter { it.trackingState == TrackingState.TRACKING }
-                planeRenderer?.drawPlanes(planes, viewMatrix, projMatrix)
+                    // 绘制检测到的平面
+                    val projMatrix = FloatArray(16)
+                    val viewMatrix = FloatArray(16)
+                    camera.getProjectionMatrix(projMatrix, 0, 0.1f, 100f)
+                    camera.getViewMatrix(viewMatrix, 0)
+                    val planes = session.getAllTrackables(Plane::class.java)
+                        .filter { it.trackingState == TrackingState.TRACKING }
+                    planeRenderer?.drawPlanes(planes, viewMatrix, projMatrix)
 
-                val hit = frame.hitTest(viewportWidth / 2f, viewportHeight / 2f)
-                    .firstOrNull { it.trackable is Plane }
-                if (hit != null) {
-                    val pose = hit.hitPose
-                    hitPoint = Point(pose.tx().toDouble(), pose.tz().toDouble())
+                    val hit = frame.hitTest(viewportWidth / 2f, viewportHeight / 2f)
+                        .firstOrNull { it.trackable is Plane }
+                    if (hit != null) {
+                        val pose = hit.hitPose
+                        hitPoint = Point(pose.tx().toDouble(), pose.tz().toDouble())
+                    }
+
+                    // 采集 Point Cloud，用检测到的地面平面 Y 值作为基准过滤
+                    val cloud = frame.acquirePointCloud()
+                    try {
+                        val buf = cloud.points // FloatBuffer: x, y, z, confidence 每4个一组
+
+                        // 取所有 TRACKING 状态水平面的平均 Y 值作为地面基准
+                        val floorY = planes
+                            .filter { it.type == Plane.Type.HORIZONTAL_UPWARD_FACING }
+                            .map { it.centerPose.ty() }
+                            .average()
+                            .takeIf { !it.isNaN() }
+                            ?.toFloat()
+                            ?: (camera.pose.ty() - 1.5f) // 无平面时回退到相机估算
+
+                        val yTolerance = 0.2f // 严格到 ±20cm，排除桌椅
+                        val groundPoints = mutableListOf<Point>()
+                        buf.rewind()
+                        while (buf.remaining() >= 4) {
+                            val x = buf.get()
+                            val y = buf.get()
+                            val z = buf.get()
+                            buf.get() // confidence，跳过
+                            if (y in (floorY - yTolerance)..(floorY + yTolerance)) {
+                                groundPoints.add(Point(x.toDouble(), z.toDouble()))
+                            }
+                        }
+                        if (groundPoints.isNotEmpty()) onPointCloud(groundPoints)
+                    } finally {
+                        cloud.release()
+                    }
                 }
-            }
             onFrameUpdate(isTracking, hitPoint)
         } catch (_: SessionPausedException) {
         } catch (_: Exception) {
@@ -690,11 +716,11 @@ class CameraBackgroundRenderer {
 // MiniMapCanvas
 // =====================================================================================
 @Composable
-fun MiniMapCanvas(vertices: List<Point>, cursor: Point?, modifier: Modifier) {
+fun MiniMapCanvas(vertices: List<Point>, cursor: Point?, pointCloud: List<Point> = emptyList(), modifier: Modifier) {
     Canvas(modifier = modifier) {
-        if (vertices.isEmpty() && cursor == null) return@Canvas
+        if (vertices.isEmpty() && cursor == null && pointCloud.isEmpty()) return@Canvas
 
-        val allPoints = vertices.toMutableList()
+        val allPoints = (vertices + pointCloud).toMutableList()
         cursor?.let { allPoints.add(it) }
 
         val minX = allPoints.minOf { it.x }; val maxX = allPoints.maxOf { it.x }
@@ -709,6 +735,11 @@ fun MiniMapCanvas(vertices: List<Point>, cursor: Point?, modifier: Modifier) {
             cx + ((p.x - pcx).toFloat() * scale),
             cy + ((p.y - pcy).toFloat() * scale)
         )
+
+        // 先画点云散点（底层）
+        pointCloud.forEach { p ->
+            drawCircle(Color(0xFF00E5FF).copy(alpha = 0.5f), radius = 1.5f.dp.toPx(), center = toPx(p))
+        }
 
         if (vertices.isNotEmpty()) {
             val path = androidx.compose.ui.graphics.Path().apply {
@@ -726,6 +757,111 @@ fun MiniMapCanvas(vertices: List<Point>, cursor: Point?, modifier: Modifier) {
         vertices.forEach { drawCircle(Color.White, 2.5f.dp.toPx(), toPx(it)) }
         cursor?.let { drawCircle(Color(0xFF00E676), 3.5f.dp.toPx(), toPx(it)) }
     }
+}
+
+// =====================================================================================
+// 边界多边形提取：栅格化 → 边缘格 → 凸包排序
+// =====================================================================================
+fun extractBoundaryPolygon(points: List<Point>, resolution: Float = 0.15f): List<Point> {
+    if (points.size < 3) return points
+
+    // 1. 映射到网格
+    val minX = points.minOf { it.x.toFloat() }
+    val minZ = points.minOf { it.y.toFloat() }
+    val occupied = HashSet<Long>()
+    fun cellKey(cx: Int, cz: Int): Long = cx.toLong().shl(32) or cz.toLong().and(0xFFFFFFFFL)
+    for (p in points) {
+        val cx = ((p.x.toFloat() - minX) / resolution).toInt()
+        val cz = ((p.y.toFloat() - minZ) / resolution).toInt()
+        occupied.add(cellKey(cx, cz))
+    }
+
+    // 2. 找边缘格（8邻域中有空格的）
+    val neighbors = listOf(-1 to -1, -1 to 0, -1 to 1, 0 to -1, 0 to 1, 1 to -1, 1 to 0, 1 to 1)
+    val edgeCells = mutableListOf<Point>()
+    for (key in occupied) {
+        val cx = (key shr 32).toInt()
+        val cz = (key and 0xFFFFFFFFL).toInt()
+        val isEdge = neighbors.any { (dx, dz) -> !occupied.contains(cellKey(cx + dx, cz + dz)) }
+        if (isEdge) {
+            val wx = minX + (cx + 0.5f) * resolution
+            val wz = minZ + (cz + 0.5f) * resolution
+            edgeCells.add(Point(wx.toDouble(), wz.toDouble()))
+        }
+    }
+    if (edgeCells.size < 3) return edgeCells
+
+    // 3. 凸包排序
+    val hull = convexHull(edgeCells)
+
+    // 4. PCA 主轴对齐：让房间"长边"朝向屏幕 Y 轴（向上）
+    return alignToScreen(hull)
+}
+
+/**
+ * PCA 主轴对齐：计算点集的主方向，旋转使主轴平行于屏幕 Y 轴。
+ * 这样不管用户扫描时的朝向，精修页显示的地图都是"竖直"的。
+ */
+private fun alignToScreen(pts: List<Point>): List<Point> {
+    if (pts.size < 2) return pts
+
+    // 质心
+    val cx = pts.sumOf { it.x } / pts.size
+    val cy = pts.sumOf { it.y } / pts.size
+
+    // 协方差矩阵元素
+    var cxx = 0.0; var cyy = 0.0; var cxy = 0.0
+    for (p in pts) {
+        val dx = p.x - cx; val dy = p.y - cy
+        cxx += dx * dx; cyy += dy * dy; cxy += dx * dy
+    }
+
+    // 最大特征值对应的特征向量（主轴方向）
+    val diff = (cxx - cyy) / 2.0
+    val eigenAngle = 0.5 * atan2(2.0 * cxy, diff * 2.0 + 1e-10)
+    // 主轴向量
+    val axisX = cos(eigenAngle)
+    val axisY = sin(eigenAngle)
+
+    // 判断主轴更接近水平还是竖直：若更接近水平，旋转 90°
+    // 目标：主轴对齐屏幕竖直方向（Y轴），即旋转角 = -(主轴与Y轴的夹角)
+    val angleToY = atan2(axisX, axisY) // 主轴与 Y 轴的夹角
+    val cosA = cos(-angleToY); val sinA = sin(-angleToY)
+
+    return pts.map { p ->
+        val dx = p.x - cx; val dy = p.y - cy
+        Point(cx + dx * cosA - dy * sinA, cy + dx * sinA + dy * cosA)
+    }
+}
+
+/** Andrew's Monotone Chain 凸包算法，返回逆时针排序顶点 */
+private fun convexHull(pts: List<Point>): List<Point> {
+    val sorted = pts.sortedWith(compareBy({ it.x }, { it.y }))
+    if (sorted.size <= 2) return sorted
+
+    fun cross(o: Point, a: Point, b: Point) =
+        (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+
+    val lower = mutableListOf<Point>()
+    for (p in sorted) {
+        while (lower.size >= 2 && cross(lower[lower.size - 2], lower.last(), p) <= 0) lower.removeLast()
+        lower.add(p)
+    }
+    val upper = mutableListOf<Point>()
+    for (p in sorted.reversed()) {
+        while (upper.size >= 2 && cross(upper[upper.size - 2], upper.last(), p) <= 0) upper.removeLast()
+        upper.add(p)
+    }
+    lower.removeLast(); upper.removeLast()
+    return lower + upper
+}
+
+// =====================================================================================
+// MapProcessor：JNI 桥接，调用 native-lib.so 中的 C++ 建图算法
+// =====================================================================================
+object MapProcessor {
+    init { System.loadLibrary("native-lib") }
+    external fun extractBoundaryPolygon(points: FloatArray, resolution: Float): FloatArray
 }
 
 // =====================================================================================

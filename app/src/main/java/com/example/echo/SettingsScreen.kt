@@ -17,6 +17,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -94,7 +96,28 @@ fun SettingsScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
                         SettingSwitchItem(icon = Icons.Default.Search, title = "启动时自动扫描", subtitle = "进入应用后自动开启低功耗蓝牙 (BLE) 扫描", checked = sharedViewModel.autoScan, onCheckedChange = { sharedViewModel.setAutoScanState(it) }); HorizontalDivider(modifier = Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                         SettingSwitchItem(icon = Icons.Default.CheckCircle, title = "过滤无名设备", subtitle = "在基站管理页屏蔽未广播名称的隐藏或乱码设备，保持列表整洁", checked = sharedViewModel.isIgnoreUnnamedEnabled, onCheckedChange = { sharedViewModel.setIgnoreUnnamed(it) }); HorizontalDivider(modifier = Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                         SettingSwitchItem(icon = Icons.Default.Refresh, title = "360° 全向高精度采集", subtitle = "开启后，采集指纹时需原地旋转一圈以获取抗遮挡的平均信号", checked = sharedViewModel.is360CollectionModeEnabled, onCheckedChange = { sharedViewModel.set360CollectionMode(it) }); HorizontalDivider(modifier = Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                        SettingSwitchItem(icon = Icons.Default.Build, title = "性能评估模式", subtitle = "开启后可在定位页手动调节 AWKNN 算法参数并测算误差", checked = sharedViewModel.isAdvancedModeEnabled, onCheckedChange = { sharedViewModel.setAdvancedMode(it) })
+                        SettingSwitchItem(icon = Icons.Default.Build, title = "性能评估模式", subtitle = "开启后可在定位页手动调节 AWKNN 算法参数并测算误差", checked = sharedViewModel.isAdvancedModeEnabled, onCheckedChange = { sharedViewModel.setAdvancedMode(it) }); HorizontalDivider(modifier = Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        // 采集间隔设置
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(Icons.Default.GridOn, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("指纹采集间距", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                                Text("相邻两个采集点之间的物理距离（米），建议 0.5 ~ 2.0m", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            OutlinedTextField(
+                                value = sharedViewModel.gridSpacing,
+                                onValueChange = { sharedViewModel.gridSpacing = it },
+                                modifier = Modifier.width(80.dp),
+                                singleLine = true,
+                                suffix = { Text("m") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                        }
                     }
                 }
             }

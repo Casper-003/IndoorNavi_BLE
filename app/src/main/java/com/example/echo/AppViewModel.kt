@@ -148,7 +148,7 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch { getApplication<Application>().dataStore.edit { it[CURRENT_MAP_ID_KEY] = mapId } }
     }
 
-    fun createNewMap(name: String, w: Double, l: Double, isAr: Boolean = false, polygon: List<Point> = emptyList()) {
+    fun createNewMap(name: String, w: Double, l: Double, isAr: Boolean = false, polygon: List<Point> = emptyList(), bgImageUri: String = "") {
         viewModelScope.launch(Dispatchers.IO) {
             val newMap = MapEntity(
                 mapId = UUID.randomUUID().toString(),
@@ -157,7 +157,8 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
                 width = w,
                 length = l,
                 polygonBounds = Converters().fromPointList(polygon),
-                isArScanned = isAr
+                isArScanned = isAr,
+                bgImageUri = bgImageUri
             )
             mapDao.insertMap(newMap)
             switchActiveMap(newMap.mapId)

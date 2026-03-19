@@ -14,8 +14,9 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CellTower
 import androidx.compose.material.icons.rounded.Explore
-import androidx.compose.material.icons.rounded.Fingerprint
+import androidx.compose.material.icons.rounded.Map
 import androidx.compose.material.icons.rounded.Settings
+import androidx.activity.compose.BackHandler
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -139,6 +140,14 @@ fun MainAppScreen(sharedViewModel: SharedViewModel) {
     val pagerState = rememberPagerState(pageCount = { 4 })
     val coroutineScope = rememberCoroutineScope()
 
+    // 非首页时，返回键跳回地图页（index=1）；地图页时正常退出
+    val currentPage = pagerState.currentPage
+    if (currentPage != 1) {
+        BackHandler {
+            coroutineScope.launch { pagerState.animateScrollToPage(1) }
+        }
+    }
+
     Scaffold(
         bottomBar = {
             // 🌟 核心修复：根据全局状态控制底部导航栏显隐，并加入丝滑的下潜动画
@@ -152,8 +161,8 @@ fun MainAppScreen(sharedViewModel: SharedViewModel) {
                     containerColor = MaterialTheme.colorScheme.surface,
                     tonalElevation = 0.dp
                 ) {
-                    val navIcons = listOf(Icons.Rounded.CellTower, Icons.Rounded.Fingerprint, Icons.Rounded.Explore, Icons.Rounded.Settings)
-                    val navLabels = listOf("基站", "指纹", "定位", "设置")
+                    val navIcons = listOf(Icons.Rounded.CellTower, Icons.Rounded.Map, Icons.Rounded.Explore, Icons.Rounded.Settings)
+                    val navLabels = listOf("基站", "地图", "定位", "设置")
                     val selectedTabIndex = pagerState.targetPage
 
                     navIcons.forEachIndexed { index, icon ->

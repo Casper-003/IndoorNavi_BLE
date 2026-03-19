@@ -32,7 +32,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.foundation.Canvas
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -45,6 +49,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.core.content.FileProvider
+import coil.compose.AsyncImage
+import androidx.compose.ui.layout.ContentScale
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
@@ -107,11 +113,28 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
                 onRescan = { rawPolygonToEdit = null; isArScanning = true }
             )
         } else if (sharedViewModel.isCollectingMode) {
-            CollectionMapScreen(
-                sharedViewModel = sharedViewModel,
-                onBackClick = { sharedViewModel.isCollectingMode = false },
-                bottomPadding = bottomPadding
-            )
+            BackHandler { sharedViewModel.isCollectingMode = false }
+            AnimatedContent(
+                targetState = sharedViewModel.isCollectingMode,
+                label = "CollectTransition",
+                transitionSpec = {
+                    if (targetState) {
+                        slideInVertically(tween(350)) { it / 6 } + fadeIn(tween(350)) togetherWith
+                        fadeOut(tween(200))
+                    } else {
+                        fadeIn(tween(200)) togetherWith
+                        slideOutVertically(tween(350)) { it / 6 } + fadeOut(tween(350))
+                    }
+                }
+            ) { collecting ->
+                if (collecting) {
+                    CollectionMapScreen(
+                        sharedViewModel = sharedViewModel,
+                        onBackClick = { sharedViewModel.isCollectingMode = false },
+                        bottomPadding = bottomPadding
+                    )
+                }
+            }
         } else {
             // 管理模式拦截物理返回
             if (isManageMode) BackHandler { isManageMode = false }
@@ -241,13 +264,18 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
                             }
                         }
                     } else {
+                        BackHandler { selectedMap = null }
                         MapDetailScreen(
                             map = targetMap,
                             sharedViewModel = sharedViewModel,
                             animatedVisibilityScope = this@AnimatedContent,
                             sharedTransitionScope = this@SharedTransitionLayout,
                             bottomPadding = bottomPadding,
-                            onBack = { selectedMap = null }
+                            onBack = { selectedMap = null },
+                            onReEdit = { poly ->
+                                selectedMap = null
+                                rawPolygonToEdit = poly
+                            }
                         )
                     }
                 }
@@ -264,7 +292,12 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
                 ManualMapCreationDialog(
                     onDismiss = { showManualMapDialog = false },
                     onCreate = { name, w, l ->
-                        sharedViewModel.createNewMap(name = name, w = w, l = l, isAr = false)
+                        // 手动建图：生成矩形四角多边形，供缩略图渲染
+                        val rectPolygon = listOf(
+                            Point(0.0, 0.0), Point(w, 0.0),
+                            Point(w, l), Point(0.0, l)
+                        )
+                        sharedViewModel.createNewMap(name = name, w = w, l = l, isAr = false, polygon = rectPolygon)
                         showManualMapDialog = false
                     }
                 )
@@ -335,12 +368,43 @@ fun MapCardItem(
                             .background(MaterialTheme.colorScheme.primary.copy(alpha = if (isSelected) 0.18f else 0.1f)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = if (map.isArScanned) Icons.Default.ViewInAr else Icons.Default.Map,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
-                            modifier = Modifier.size(48.dp)
-                        )
+                        val polygon = remember(map.polygonBounds) { Converters().toPointList(map.polygonBounds) }
+                        // 底图（有 URI 时叠在多边形下方）
+                        if (map.bgImageUri.isNotEmpty()) {
+                            AsyncImage(
+                                model = map.bgImageUri,
+                                contentDescription = "底图",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                        if (polygon.size >= 3) {
+                            val primaryColor = MaterialTheme.colorScheme.primary
+                            Canvas(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+                                val minX = polygon.minOf { it.x }.toFloat()
+                                val maxX = polygon.maxOf { it.x }.toFloat()
+                                val minY = polygon.minOf { it.y }.toFloat()
+                                val maxY = polygon.maxOf { it.y }.toFloat()
+                                val scale = minOf(size.width / (maxX - minX).coerceAtLeast(0.01f), size.height / (maxY - minY).coerceAtLeast(0.01f)) * 0.85f
+                                val ox = size.width / 2f - ((minX + maxX) / 2f * scale)
+                                val oy = size.height / 2f - ((minY + maxY) / 2f * scale)
+                                fun toPx(p: Point) = Offset(ox + p.x.toFloat() * scale, oy + p.y.toFloat() * scale)
+                                val path = Path().apply {
+                                    moveTo(toPx(polygon.first()).x, toPx(polygon.first()).y)
+                                    polygon.drop(1).forEach { lineTo(toPx(it).x, toPx(it).y) }
+                                    close()
+                                }
+                                drawPath(path, primaryColor.copy(alpha = 0.15f))
+                                drawPath(path, primaryColor.copy(alpha = if (isSelected) 0.9f else 0.6f), style = Stroke(width = 2.dp.toPx()))
+                            }
+                        } else {
+                            Icon(
+                                imageVector = if (map.isArScanned) Icons.Default.ViewInAr else Icons.Default.Map,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
+                                modifier = Modifier.size(48.dp)
+                            )
+                        }
                     }
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(text = map.mapName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -382,13 +446,34 @@ fun MapDetailScreen(
     animatedVisibilityScope: AnimatedVisibilityScope,
     sharedTransitionScope: SharedTransitionScope,
     bottomPadding: Dp,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onReEdit: ((List<Point>) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val formatter = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
     val isActive = sharedViewModel.currentActiveMapId.collectAsState().value == map.mapId
     var showRenameDialog by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
+
+    // 检测多边形是否全部为直角（容差 ±10°）
+    val polygon = remember(map.polygonBounds) { Converters().toPointList(map.polygonBounds) }
+    val isOrthogonal = remember(polygon) {
+        if (polygon.size < 3) return@remember true
+        polygon.indices.all { i ->
+            val a = polygon[(i - 1 + polygon.size) % polygon.size]
+            val b = polygon[i]
+            val c = polygon[(i + 1) % polygon.size]
+            val v1x = a.x - b.x; val v1y = a.y - b.y
+            val v2x = c.x - b.x; val v2y = c.y - b.y
+            val len1 = kotlin.math.sqrt(v1x * v1x + v1y * v1y)
+            val len2 = kotlin.math.sqrt(v2x * v2x + v2y * v2y)
+            if (len1 < 1e-6 || len2 < 1e-6) return@all true
+            val cosA = (v1x * v2x + v1y * v2y) / (len1 * len2)
+            val angleDeg = Math.toDegrees(kotlin.math.acos(cosA.coerceIn(-1.0, 1.0)))
+            // 接受 90°（直角）或 180°（共线顶点），容差 ±10°
+            kotlin.math.abs(angleDeg - 90.0) <= 10.0 || angleDeg >= 170.0
+        }
+    }
 
     BackHandler(onBack = onBack)
 
@@ -430,7 +515,29 @@ fun MapDetailScreen(
                     modifier = Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(32.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)).border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(32.dp)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text("雷达引擎高精度渲染区", color = Color.Gray)
+                    if (polygon.size >= 3) {
+                        val primaryColor = MaterialTheme.colorScheme.primary
+                        Canvas(modifier = Modifier.fillMaxSize().padding(32.dp)) {
+                            val minX = polygon.minOf { it.x }.toFloat()
+                            val maxX = polygon.maxOf { it.x }.toFloat()
+                            val minY = polygon.minOf { it.y }.toFloat()
+                            val maxY = polygon.maxOf { it.y }.toFloat()
+                            val scale = minOf(size.width / (maxX - minX).coerceAtLeast(0.01f), size.height / (maxY - minY).coerceAtLeast(0.01f)) * 0.85f
+                            val ox = size.width / 2f - ((minX + maxX) / 2f * scale)
+                            val oy = size.height / 2f - ((minY + maxY) / 2f * scale)
+                            fun toPx(p: Point) = Offset(ox + p.x.toFloat() * scale, oy + p.y.toFloat() * scale)
+                            val path = Path().apply {
+                                moveTo(toPx(polygon.first()).x, toPx(polygon.first()).y)
+                                polygon.drop(1).forEach { lineTo(toPx(it).x, toPx(it).y) }
+                                close()
+                            }
+                            drawPath(path, primaryColor.copy(alpha = 0.12f))
+                            drawPath(path, primaryColor.copy(alpha = 0.8f), style = Stroke(width = 3.dp.toPx()))
+                            polygon.forEach { drawCircle(primaryColor, radius = 4.dp.toPx(), center = toPx(it)) }
+                        }
+                    } else {
+                        Text("暂无轮廓数据", color = Color.Gray)
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))
@@ -443,7 +550,43 @@ fun MapDetailScreen(
                 Spacer(modifier = Modifier.height(4.dp))
                 Text("建图时间: ${formatter.format(Date(map.createdAt))}", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
 
+                // 非直角多边形警告
+                if (!isOrthogonal) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer)
+                            Text(
+                                "地图轮廓存在非直角边，无法用于雷达采集。请先进入精修页执行「一键直角化」。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(24.dp))
+
+                // 重新精修按钮（仅 AR 扫描地图且有多边形数据时显示）
+                if (onReEdit != null && polygon.isNotEmpty()) {
+                    OutlinedButton(
+                        onClick = { onReEdit(polygon) },
+                        modifier = Modifier.fillMaxWidth().height(52.dp).padding(bottom = 8.dp),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("重新精修轮廓", fontWeight = FontWeight.Bold)
+                    }
+                }
 
                 Row(modifier = Modifier.fillMaxWidth().padding(bottom = bottomPadding + 8.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     Button(
@@ -467,6 +610,7 @@ fun MapDetailScreen(
                             if (!isActive) sharedViewModel.switchActiveMap(map.mapId)
                             sharedViewModel.isCollectingMode = true
                         },
+                        enabled = isOrthogonal,
                         modifier = Modifier.weight(1f).height(64.dp),
                         shape = RoundedCornerShape(20.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
@@ -573,7 +717,8 @@ fun shareMapFiles(context: Context, maps: List<MapEntity>) {
     }
     sb.append("]")
 
-    val fileName = if (maps.size == 1) "${maps[0].mapName}.echo.json" else "echo_maps_export.json"
+    val fileName = if (maps.size == 1) "${maps[0].mapName}.echo.json"
+                   else "echo_maps_export_${System.currentTimeMillis()}.json"
     val file = File(context.cacheDir, fileName)
     file.writeText(sb.toString())
 
@@ -628,6 +773,22 @@ fun NewMapSelectionDialog(onDismiss: () -> Unit, onSelectAR: () -> Unit, onSelec
     )
 }
 
+
+// 射线法判断点是否在多边形内（用于 AR 地图格点过滤）
+fun pointInPolygon(pt: Point, polygon: List<Point>): Boolean {
+    var inside = false
+    var j = polygon.size - 1
+    for (i in polygon.indices) {
+        val xi = polygon[i].x; val yi = polygon[i].y
+        val xj = polygon[j].x; val yj = polygon[j].y
+        if ((yi > pt.y) != (yj > pt.y) &&
+            pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi) {
+            inside = !inside
+        }
+        j = i
+    }
+    return inside
+}
 
 @Composable
 fun ManualMapCreationDialog(
@@ -705,10 +866,25 @@ fun CollectionMapScreen(sharedViewModel: SharedViewModel, onBackClick: () -> Uni
     val w = currentMap?.width?.toFloat() ?: 10f
     val l = currentMap?.length?.toFloat() ?: 10f
     val s = (sharedViewModel.gridSpacing.toFloatOrNull() ?: 1f).coerceAtLeast(0.1f)
+    val mapPolygon = remember(currentMap?.polygonBounds) {
+        currentMap?.polygonBounds?.let { Converters().toPointList(it) } ?: emptyList()
+    }
 
-    val gridCoordinates = remember(w, l, s) {
-        val pts = mutableListOf<Point>(); var x = 0f
-        while (x <= w) { var y = 0f; while (y <= l) { pts.add(Point(x.toDouble(), y.toDouble())); y += s }; x += s }
+    val gridCoordinates = remember(w, l, s, mapPolygon) {
+        val pts = mutableListOf<Point>()
+        var x = 0f
+        while (x <= w) {
+            var y = 0f
+            while (y <= l) {
+                val pt = Point(x.toDouble(), y.toDouble())
+                // AR 扫描图：只保留多边形内部的格点
+                if (mapPolygon.size < 3 || pointInPolygon(pt, mapPolygon)) {
+                    pts.add(pt)
+                }
+                y += s
+            }
+            x += s
+        }
         pts
     }
 
@@ -759,8 +935,11 @@ fun CollectionMapScreen(sharedViewModel: SharedViewModel, onBackClick: () -> Uni
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
     val mapContent = @Composable {
-        Box(modifier = Modifier.padding(all = 16.dp).aspectRatio(1f, matchHeightConstraintsFirst = isWideScreen).clip(RoundedCornerShape(24.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)).border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.1f), RoundedCornerShape(24.dp))) {
+        Box(modifier = Modifier.fillMaxSize().padding(all = 16.dp).clip(RoundedCornerShape(24.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)).border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.1f), RoundedCornerShape(24.dp))) {
             InteractiveRadarMap(
+                mapPolygon = mapPolygon,
+                mapWidth = w.toDouble(),
+                mapHeight = l.toDouble(),
                 gridCoordinates = gridCoordinates,
                 recordedPoints = sharedViewModel.recordedPoints.map { it.coordinate },
                 selectedPoint = selectedPoint, predictedPoint = null,
@@ -830,7 +1009,12 @@ fun CollectionMapScreen(sharedViewModel: SharedViewModel, onBackClick: () -> Uni
         if (isWideScreen) {
             Row(modifier = Modifier.fillMaxSize().padding(top = innerPadding.calculateTopPadding())) { Box(modifier = Modifier.weight(1.5f).fillMaxHeight(), contentAlignment = Alignment.Center) { mapContent() }; Column(modifier = Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(bottom = bottomPadding)) { controlContent() } }
         } else {
-            Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) { Spacer(modifier = Modifier.height(innerPadding.calculateTopPadding())); Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { mapContent() }; controlContent(); Spacer(modifier = Modifier.height(bottomPadding + 24.dp)) }
+            Column(modifier = Modifier.fillMaxSize().padding(top = innerPadding.calculateTopPadding())) {
+                // 地图区：weight(1f) 占满剩余空间，内部按比例居中显示
+                Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) { mapContent() }
+                // 控制栏：固定高度不压缩
+                Column { controlContent(); Spacer(modifier = Modifier.height(bottomPadding + 8.dp)) }
+            }
         }
     }
 

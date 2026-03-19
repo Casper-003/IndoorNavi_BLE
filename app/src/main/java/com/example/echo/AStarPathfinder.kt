@@ -76,12 +76,18 @@ class AStarPathfinder {
 
         val isObstacle = Array(cols) { BooleanArray(rows) }
 
-        // 2. 🌟 天然空气墙生成：遍历所有网格，如果网格中心点不在 AR 多边形内，则标记为绝对障碍物！
+        // 2. 天然空气墙生成：遍历所有网格，如果对应指纹点不在 AR 多边形内则标记为障碍
+        // 对边界点用微小 epsilon 扰动，避免射线法在多边形边上的数值不稳定问题
         if (mapPolygon.size >= 3) {
+            val eps = gridResolution * 1e-4
             for (c in 0 until cols) {
                 for (r in 0 until rows) {
-                    val cellCenter = Point(c * gridResolution + gridResolution / 2.0, r * gridResolution + gridResolution / 2.0)
-                    if (!isPointInPolygon(cellCenter, mapPolygon)) {
+                    val px = c * gridResolution
+                    val py = r * gridResolution
+                    // 原点 + 微扰点，任一在多边形内则视为可通行
+                    val inPoly = isPointInPolygon(Point(px, py), mapPolygon) ||
+                                 isPointInPolygon(Point(px + eps, py + eps), mapPolygon)
+                    if (!inPoly) {
                         isObstacle[c][r] = true
                     }
                 }

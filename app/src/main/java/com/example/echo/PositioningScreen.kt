@@ -2,28 +2,39 @@ package com.example.echo
 
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Science
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -242,7 +253,7 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
         Box(
             modifier = Modifier
                 .padding(all = 16.dp)
-                .aspectRatio(1f, matchHeightConstraintsFirst = isWideScreen)
+                .fillMaxSize()
                 .clip(RoundedCornerShape(24.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f))
                 .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.1f), RoundedCornerShape(24.dp))
@@ -256,6 +267,8 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
             } else {
                 InteractiveRadarMap(
                     mapPolygon = mapPolygon, // 🌟 传给地图 UI 进行渲染
+                    mapWidth = w.toDouble(),
+                    mapHeight = l.toDouble(),
                     gridCoordinates = gridCoordinates,
                     recordedPoints = activeFingerprints.map { it.coordinate },
                     selectedPoint = groundTruthPoint,
@@ -304,180 +317,216 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
                         }
                     }
                 )
+
+                // HUD 提示条：贴地图底边，半透明胶囊
+                val hudText: String? = when (sharedViewModel.currentInteractionState) {
+                    InteractionState.NAVIGATION_MODE ->
+                        if (sharedViewModel.navigationTarget == null) "点击地图选定导航终点"
+                        else if (sharedViewModel.currentPath.isEmpty()) "终点不可达，请重新选择"
+                        else null
+                    InteractionState.OBSTACLE_MODE -> "点击或拖动地图绘制/擦除墙体"
+                    InteractionState.EVALUATION_MODE ->
+                        if (groundTruthPoint == null) "点击地图选定基准真值" else null
+                    InteractionState.BENCHMARK_MODE ->
+                        if (sharedViewModel.isContinuousLogging) "正在 2Hz 记录轨迹，匀速走动..." else null
+                }
+                AnimatedVisibility(
+                    visible = hudText != null,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp),
+                    enter = fadeIn(tween(200)) + slideInVertically(initialOffsetY = { -it / 2 }),
+                    exit = fadeOut(tween(150)) + slideOutVertically(targetOffsetY = { -it / 2 })
+                ) {
+                    if (hudText != null) {
+                        val hudColor = when (sharedViewModel.currentInteractionState) {
+                            InteractionState.NAVIGATION_MODE ->
+                                if (sharedViewModel.currentPath.isEmpty() && sharedViewModel.navigationTarget != null)
+                                    MaterialTheme.colorScheme.errorContainer
+                                else MaterialTheme.colorScheme.primaryContainer
+                            InteractionState.BENCHMARK_MODE -> MaterialTheme.colorScheme.tertiaryContainer
+                            else -> MaterialTheme.colorScheme.primaryContainer
+                        }
+                        val hudTextColor = when (sharedViewModel.currentInteractionState) {
+                            InteractionState.NAVIGATION_MODE ->
+                                if (sharedViewModel.currentPath.isEmpty() && sharedViewModel.navigationTarget != null)
+                                    MaterialTheme.colorScheme.onErrorContainer
+                                else MaterialTheme.colorScheme.onPrimaryContainer
+                            InteractionState.BENCHMARK_MODE -> MaterialTheme.colorScheme.onTertiaryContainer
+                            else -> MaterialTheme.colorScheme.onPrimaryContainer
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(hudColor.copy(alpha = 0.92f))
+                                .padding(horizontal = 16.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = hudText,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = hudTextColor
+                            )
+                        }
+                    }
+                }
             }
         }
     }
 
     val controlContent = @Composable {
-        Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))) {
-            Column(modifier = Modifier.padding(20.dp)) {
-
-                Text("系统交互模式:", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 12.dp))
-                SegmentedButton(
-                    options = InteractionState.values().map { it.title },
-                    selectedIndex = InteractionState.values().indexOf(sharedViewModel.currentInteractionState),
-                    onOptionSelected = { sharedViewModel.currentInteractionState = InteractionState.values()[it] }
-                )
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-                when (sharedViewModel.currentInteractionState) {
-                    InteractionState.EVALUATION_MODE -> {
-                        if (sharedViewModel.isAdvancedModeEnabled) {
-                            Text(text = "性能评估台", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                                Text("解算算法:", fontWeight = FontWeight.Bold, modifier = Modifier.weight(0.8f))
-                                Box(modifier = Modifier.weight(1.2f)) { SegmentedButton(options = listOf("KNN", "WKNN"), selectedIndex = if (useWknn) 1 else 0, onOptionSelected = { useWknn = (it == 1) }) }
-                            }
-
-                            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text("AWKNN 动态截断:", fontWeight = FontWeight.Bold)
-                                    Text("自适应 K 值 ∈ [2, 5]", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                                }
-                                Switch(checked = useAwknn, onCheckedChange = { useAwknn = it })
-                            }
-
-                            AnimatedVisibility(visible = !useAwknn) {
-                                Column {
-                                    HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                                        Text("固定 K 值 (${kValue.roundToInt()}):", fontWeight = FontWeight.Bold, modifier = Modifier.weight(0.8f))
-                                        Slider(value = kValue, onValueChange = { kValue = kotlin.math.round(it) }, valueRange = 1f..7f, steps = 5, modifier = Modifier.weight(1.2f))
-                                    }
-                                }
-                            }
-
-                            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                            Text("轨迹优化策略 (消融实验):", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 12.dp))
-                            SegmentedButton(options = listOf("纯生数据", "传统平滑", "PDR 融合"), selectedIndex = smoothingStrategy, onOptionSelected = { smoothingStrategy = it })
-                            HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+        when (sharedViewModel.currentInteractionState) {
+            InteractionState.NAVIGATION_MODE -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "对准地图正方向后校准罗盘",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray,
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilledTonalButton(
+                        onClick = { fusionEngine.calibrateHeading(); Toast.makeText(context, "罗盘已对齐正方向", Toast.LENGTH_SHORT).show() },
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                        modifier = Modifier.height(36.dp)
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("校准罗盘", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+            InteractionState.OBSTACLE_MODE -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    if (sharedViewModel.obstacles.isNotEmpty()) {
+                        FilledTonalButton(
+                            onClick = { showClearObstaclesConfirm = true },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer,
+                                contentColor = MaterialTheme.colorScheme.onErrorContainer
+                            ),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                            modifier = Modifier.height(36.dp)
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("清空所有墙体", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                         }
-
-                        Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("基准真值 (地图选定)", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                            Spacer(modifier = Modifier.height(4.dp))
+                    } else {
+                        Text("暂无墙体，开始绘制吧", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    }
+                }
+            }
+            InteractionState.EVALUATION_MODE -> {
+                if (sharedViewModel.isAdvancedModeEnabled) {
+                    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            Text("算法", style = MaterialTheme.typography.labelSmall, color = Color.Gray, modifier = Modifier.width(32.dp))
+                            Box(modifier = Modifier.weight(1f)) {
+                                SegmentedButton(options = listOf("KNN", "WKNN"), selectedIndex = if (useWknn) 1 else 0, onOptionSelected = { useWknn = (it == 1) })
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("AWKNN", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                            Switch(checked = useAwknn, onCheckedChange = { useAwknn = it }, modifier = Modifier.scale(0.75f))
+                        }
+                        AnimatedVisibility(visible = !useAwknn) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                Text("K=${kValue.roundToInt()}", style = MaterialTheme.typography.labelSmall, color = Color.Gray, modifier = Modifier.width(32.dp))
+                                Slider(value = kValue, onValueChange = { kValue = kotlin.math.round(it) }, valueRange = 1f..7f, steps = 5, modifier = Modifier.weight(1f))
+                            }
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            Text("平滑", style = MaterialTheme.typography.labelSmall, color = Color.Gray, modifier = Modifier.width(32.dp))
+                            Box(modifier = Modifier.weight(1f)) {
+                                SegmentedButton(options = listOf("生数据", "平滑", "PDR"), selectedIndex = smoothingStrategy, onOptionSelected = { smoothingStrategy = it })
+                            }
+                        }
+                    }
+                } else {
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("基准真值", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                             Text(
-                                text = if (groundTruthPoint != null) "X: ${String.format("%.2f", groundTruthPoint!!.x)}, Y: ${String.format("%.2f", groundTruthPoint!!.y)}" else "尚未选定",
-                                style = MaterialTheme.typography.titleMedium,
+                                text = if (groundTruthPoint != null) "X: ${String.format("%.2f", groundTruthPoint!!.x)}, Y: ${String.format("%.2f", groundTruthPoint!!.y)}" else "点击地图选定",
+                                style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.Bold,
-                                color = if(groundTruthPoint != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                color = if (groundTruthPoint != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
-                    InteractionState.NAVIGATION_MODE -> {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                            if (sharedViewModel.navigationTarget == null) {
-                                Text("请在地图上点击选定导航终点", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                                Spacer(modifier = Modifier.height(16.dp))
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                                Spacer(modifier = Modifier.height(16.dp))
-                            }
-
-                            Text("因局部磁场偏差，PDR罗盘可能会发生漂移", style = MaterialTheme.typography.bodySmall, color = Color.Gray, textAlign = TextAlign.Center)
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            OutlinedButton(onClick = { fusionEngine.calibrateHeading(); Toast.makeText(context, "罗盘已对齐正方向", Toast.LENGTH_SHORT).show() }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
-                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("📌 对准地图正方向后点击校准", fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            }
-                        }
-                    }
-                    InteractionState.OBSTACLE_MODE -> {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                            Text("避障与墙体编辑", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text("点击或拖动地图以绘制/擦除障碍物", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-
-                            Spacer(modifier = Modifier.height(16.dp))
-                            if (sharedViewModel.obstacles.isNotEmpty()) {
-                                OutlinedButton(
-                                    onClick = { showClearObstaclesConfirm = true },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                                ) {
-                                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("一键清空所有墙体", fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
-                    }
-                    InteractionState.BENCHMARK_MODE -> {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                            Text("环境上下文标签", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                            Spacer(modifier = Modifier.height(8.dp))
-                            SegmentedButton(options = sharedViewModel.envLabels, selectedIndex = sharedViewModel.envLabels.indexOf(sharedViewModel.currentEnvLabel), onOptionSelected = { sharedViewModel.currentEnvLabel = sharedViewModel.envLabels[it] })
-                            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-                            var benchmarkModeTab by remember { mutableIntStateOf(0) }
-                            SegmentedButton(options = listOf("定点空间", "定点时间", "自由轨迹"), selectedIndex = benchmarkModeTab, onOptionSelected = { benchmarkModeTab = it })
-                            Spacer(modifier = Modifier.height(16.dp))
-
-                            when (benchmarkModeTab) {
-                                0 -> {
-                                    if (groundTruthPoint == null) {
-                                        Text("请在地图上精准点击你所在的物理坐标点", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
-                                    } else {
-                                        Text("物理真值 X: ${String.format("%.2f", groundTruthPoint!!.x)}, Y: ${String.format("%.2f", groundTruthPoint!!.y)}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                                        Spacer(modifier = Modifier.height(16.dp))
-                                        if (sharedViewModel.isBenchmarking) {
-                                            LinearProgressIndicator(progress = { benchmarkProgress }, modifier = Modifier.fillMaxWidth().height(12.dp).clip(RoundedCornerShape(6.dp)))
-                                            Text("正在等待物理信号更新... ${(benchmarkProgress * 50).toInt()}/50", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top=8.dp))
-                                            Spacer(modifier = Modifier.height(12.dp))
-                                            Button(onClick = { benchmarkLogger.cancelLogging(); sharedViewModel.isBenchmarking = false; benchmarkProgress = 0f }, modifier = Modifier.fillMaxWidth().height(40.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("取消采样", fontWeight = FontWeight.Bold) }
-                                        } else {
-                                            Button(onClick = {
-                                                sharedViewModel.isBenchmarking = true;
-                                                benchmarkLogger.startLogging(coroutineScope = coroutineScope, truth = groundTruthPoint!!, liveDevicesFlow = scanner.scannedDevicesFlow, getSelectedMacs = { sharedViewModel.selectedDevices.keys }, locator = locator, activeFingerprints = activeFingerprints, kValue = kValue.roundToInt(),
-                                                    getFused = { fusedPosition },
-                                                    getPurePdr = { fusionEngine.purePdrPosition.value },
-                                                    getGainW = { fusionEngine.currentBleWeight.value },
-                                                    envLabel = sharedViewModel.currentEnvLabel, targetSamples = 50, onProgress = { benchmarkProgress = it }, onComplete = { sharedViewModel.isBenchmarking = false; benchmarkProgress = 0f; benchmarkLogger.stopAndExport(context) })
-                                            }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) { Text("开始定额采样 (50次)", fontWeight = FontWeight.Bold) }
-                                        }
-                                    }
-                                }
-                                1 -> {
-                                    Text("将手机静置于桌面，用于收集滤波平滑折线图", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
-                                    Spacer(modifier = Modifier.height(16.dp))
+                }
+            }
+            InteractionState.BENCHMARK_MODE -> {
+                var benchmarkModeTab by remember { mutableIntStateOf(0) }
+                Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SegmentedButton(options = listOf("定点", "计时", "轨迹"), selectedIndex = benchmarkModeTab, onOptionSelected = { benchmarkModeTab = it })
+                    when (benchmarkModeTab) {
+                        0 -> {
+                            if (groundTruthPoint == null) {
+                                Text("点击地图选定物理真值坐标", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                            } else {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                    Text(
+                                        "真值 X:${String.format("%.1f", groundTruthPoint!!.x)} Y:${String.format("%.1f", groundTruthPoint!!.y)}",
+                                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.weight(1f)
+                                    )
                                     if (sharedViewModel.isBenchmarking) {
-                                        LinearProgressIndicator(progress = { benchmarkProgress }, modifier = Modifier.fillMaxWidth().height(12.dp).clip(RoundedCornerShape(6.dp)))
-                                        Text("正在静默采集中... ${(benchmarkProgress * 60).toInt()} / 60 秒", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top=8.dp))
-                                        Spacer(modifier = Modifier.height(12.dp))
-                                        Button(onClick = { benchmarkLogger.cancelLogging(); sharedViewModel.isBenchmarking = false; benchmarkProgress = 0f }, modifier = Modifier.fillMaxWidth().height(40.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("取消采集", fontWeight = FontWeight.Bold) }
+                                        LinearProgressIndicator(progress = { benchmarkProgress }, modifier = Modifier.width(60.dp).height(6.dp).clip(RoundedCornerShape(3.dp)))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        FilledTonalButton(
+                                            onClick = { benchmarkLogger.cancelLogging(); sharedViewModel.isBenchmarking = false; benchmarkProgress = 0f },
+                                            colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer),
+                                            shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp), modifier = Modifier.height(34.dp)
+                                        ) { Text("取消", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold) }
                                     } else {
-                                        Button(onClick = {
-                                            sharedViewModel.isBenchmarking = true; benchmarkProgress = 0f;
-                                            benchmarkLogger.startTimeBoundLogging(coroutineScope = coroutineScope, liveDevicesFlow = scanner.scannedDevicesFlow, getSelectedMacs = { sharedViewModel.selectedDevices.keys }, locator = locator, activeFingerprints = activeFingerprints, kValue = kValue.roundToInt(),
-                                                getFused = { fusedPosition },
-                                                getPurePdr = { fusionEngine.purePdrPosition.value },
-                                                getGainW = { fusionEngine.currentBleWeight.value },
-                                                envLabel = sharedViewModel.currentEnvLabel, durationSeconds = 60, onProgress = { benchmarkProgress = it }, onComplete = { sharedViewModel.isBenchmarking = false; benchmarkProgress = 0f; benchmarkLogger.stopAndExport(context) })
-                                        }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) { Text("▶ 开始 60 秒读条采集", fontWeight = FontWeight.Bold) }
+                                        FilledTonalButton(
+                                            onClick = { sharedViewModel.isBenchmarking = true; benchmarkLogger.startLogging(coroutineScope = coroutineScope, truth = groundTruthPoint!!, liveDevicesFlow = scanner.scannedDevicesFlow, getSelectedMacs = { sharedViewModel.selectedDevices.keys }, locator = locator, activeFingerprints = activeFingerprints, kValue = kValue.roundToInt(), getFused = { fusedPosition }, getPurePdr = { fusionEngine.purePdrPosition.value }, getGainW = { fusionEngine.currentBleWeight.value }, envLabel = sharedViewModel.currentEnvLabel, targetSamples = 50, onProgress = { benchmarkProgress = it }, onComplete = { sharedViewModel.isBenchmarking = false; benchmarkProgress = 0f; benchmarkLogger.stopAndExport(context) }) },
+                                            shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp), modifier = Modifier.height(34.dp)
+                                        ) { Text("采样×50", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold) }
                                     }
                                 }
-                                2 -> {
-                                    if (sharedViewModel.isContinuousLogging) {
-                                        Text("🔴 正在以 2Hz 频率连续记录轨迹...", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
-                                        Spacer(modifier = Modifier.height(16.dp))
-                                        Button(onClick = { sharedViewModel.isContinuousLogging = false; benchmarkLogger.stopAndExport(context) }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("⏹ 停止走动并导出轨迹", fontWeight = FontWeight.Bold) }
-                                    } else {
-                                        Text("无需点选真值，开启后匀速走动即可画出轨迹", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
-                                        Spacer(modifier = Modifier.height(16.dp))
-                                        Button(onClick = {
-                                            sharedViewModel.isContinuousLogging = true;
-                                            benchmarkLogger.startContinuousLogging(coroutineScope = coroutineScope, liveDevicesFlow = scanner.scannedDevicesFlow, getSelectedMacs = { sharedViewModel.selectedDevices.keys }, locator = locator, activeFingerprints = activeFingerprints, kValue = kValue.roundToInt(),
-                                                getFused = { fusedPosition },
-                                                getPurePdr = { fusionEngine.purePdrPosition.value },
-                                                getGainW = { fusionEngine.currentBleWeight.value },
-                                                envLabel = sharedViewModel.currentEnvLabel)
-                                        }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))) { Text("▶ 开始录制不限时轨迹", fontWeight = FontWeight.Bold) }
-                                    }
+                            }
+                        }
+                        1 -> {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                Text("静置桌面，收集滤波折线图", style = MaterialTheme.typography.bodySmall, color = Color.Gray, modifier = Modifier.weight(1f))
+                                if (sharedViewModel.isBenchmarking) {
+                                    LinearProgressIndicator(progress = { benchmarkProgress }, modifier = Modifier.width(60.dp).height(6.dp).clip(RoundedCornerShape(3.dp)))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    FilledTonalButton(
+                                        onClick = { benchmarkLogger.cancelLogging(); sharedViewModel.isBenchmarking = false; benchmarkProgress = 0f },
+                                        colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer),
+                                        shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp), modifier = Modifier.height(34.dp)
+                                    ) { Text("取消", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold) }
+                                } else {
+                                    FilledTonalButton(
+                                        onClick = { sharedViewModel.isBenchmarking = true; benchmarkProgress = 0f; benchmarkLogger.startTimeBoundLogging(coroutineScope = coroutineScope, liveDevicesFlow = scanner.scannedDevicesFlow, getSelectedMacs = { sharedViewModel.selectedDevices.keys }, locator = locator, activeFingerprints = activeFingerprints, kValue = kValue.roundToInt(), getFused = { fusedPosition }, getPurePdr = { fusionEngine.purePdrPosition.value }, getGainW = { fusionEngine.currentBleWeight.value }, envLabel = sharedViewModel.currentEnvLabel, durationSeconds = 60, onProgress = { benchmarkProgress = it }, onComplete = { sharedViewModel.isBenchmarking = false; benchmarkProgress = 0f; benchmarkLogger.stopAndExport(context) }) },
+                                        shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp), modifier = Modifier.height(34.dp)
+                                    ) { Text("60秒采集", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold) }
                                 }
+                            }
+                        }
+                        2 -> {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                Text(
+                                    if (sharedViewModel.isContinuousLogging) "正在 2Hz 频率记录轨迹..." else "匀速走动即可录制轨迹",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (sharedViewModel.isContinuousLogging) MaterialTheme.colorScheme.error else Color.Gray,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                FilledTonalButton(
+                                    onClick = { if (sharedViewModel.isContinuousLogging) { sharedViewModel.isContinuousLogging = false; benchmarkLogger.stopAndExport(context) } else { sharedViewModel.isContinuousLogging = true; benchmarkLogger.startContinuousLogging(coroutineScope = coroutineScope, liveDevicesFlow = scanner.scannedDevicesFlow, getSelectedMacs = { sharedViewModel.selectedDevices.keys }, locator = locator, activeFingerprints = activeFingerprints, kValue = kValue.roundToInt(), getFused = { fusedPosition }, getPurePdr = { fusionEngine.purePdrPosition.value }, getGainW = { fusionEngine.currentBleWeight.value }, envLabel = sharedViewModel.currentEnvLabel) } },
+                                    colors = if (sharedViewModel.isContinuousLogging) ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer) else ButtonDefaults.filledTonalButtonColors(),
+                                    shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp), modifier = Modifier.height(34.dp)
+                                ) { Text(if (sharedViewModel.isContinuousLogging) "停止导出" else "开始录制", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold) }
                             }
                         }
                     }
@@ -550,18 +599,76 @@ fun PositioningTestScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp) {
             )
         }
     ) { innerPadding ->
-        Box(modifier = Modifier.fillMaxSize()) {
-            if (isWideScreen) {
-                Row(modifier = Modifier.fillMaxSize().padding(top = innerPadding.calculateTopPadding())) {
-                    Box(modifier = Modifier.weight(1.5f).fillMaxHeight(), contentAlignment = Alignment.Center) { mapContent() }
-                    Column(modifier = Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(bottom = bottomPadding)) { controlContent() }
+        if (isWideScreen) {
+            Row(modifier = Modifier.fillMaxSize().padding(top = innerPadding.calculateTopPadding())) {
+                Box(modifier = Modifier.weight(1.5f).fillMaxHeight(), contentAlignment = Alignment.Center) { mapContent() }
+                Column(modifier = Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(bottom = bottomPadding)) { controlContent() }
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = innerPadding.calculateTopPadding(), bottom = bottomPadding)
+            ) {
+                // 地图框：填满剩余空间
+                Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                    mapContent()
                 }
-            } else {
-                Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-                    Spacer(modifier = Modifier.height(innerPadding.calculateTopPadding()))
-                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { mapContent() }
+
+                // 模式切换栏
+                val modes = listOf(
+                    InteractionState.NAVIGATION_MODE,
+                    InteractionState.OBSTACLE_MODE,
+                    InteractionState.EVALUATION_MODE,
+                    InteractionState.BENCHMARK_MODE
+                )
+                val modeIcons = listOf(Icons.Default.Navigation, Icons.Default.Edit, Icons.Default.Science, Icons.Default.BarChart)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(10.dp))
+                ) {
+                    modes.forEachIndexed { i, mode ->
+                        val isSelected = sharedViewModel.currentInteractionState == mode
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .background(if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+                                .clickable { sharedViewModel.currentInteractionState = mode }
+                                .padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = modeIcons[i],
+                                contentDescription = mode.title,
+                                modifier = Modifier.size(15.dp),
+                                tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = mode.title,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (i < modes.size - 1) {
+                            Box(modifier = Modifier.width(1.dp).height(32.dp).background(MaterialTheme.colorScheme.outlineVariant).align(Alignment.CenterVertically))
+                        }
+                    }
+                }
+
+                // 当前模式操作内容：高度变化时带缩放动画
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .animateContentSize(animationSpec = tween(durationMillis = 300))
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
                     controlContent()
-                    Spacer(modifier = Modifier.height(bottomPadding + 24.dp))
                 }
             }
         }

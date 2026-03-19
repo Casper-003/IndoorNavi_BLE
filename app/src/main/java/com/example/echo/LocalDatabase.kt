@@ -14,7 +14,8 @@ data class MapEntity(
     val width: Double,
     val length: Double,
     val polygonBounds: String = "",
-    val isArScanned: Boolean = false
+    val isArScanned: Boolean = false,
+    val bgImageUri: String = ""          // 底图 URI，空字符串表示无底图
 )
 
 @Entity(
@@ -159,7 +160,7 @@ interface ObstacleDao {
 // ================= 4. 数据库引擎单例 =================
 @Database(
     entities = [MapEntity::class, ReferencePointEntity::class, ObstacleEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
