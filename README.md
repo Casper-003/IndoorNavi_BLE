@@ -73,10 +73,10 @@ com.example.echo/
 └── ...
 ```
 ##  关于此软件
-* 开发者: Casper-003 , Gemini , Claude
+* 开发者: Casper-003
 * 联系: casper-003@outlook.com
 * 本项目为LNU本科毕业设计成果。
 
 ##  开源协议
 This project is licensed under the MIT License.
-## *Developed with ❤️ by Casper-003 , Google Gemini & Claude Code*
+## *Developed with ❤️ by Casper-003 . Collaborated with Google Gemini & Claude Code*
