@@ -50,6 +50,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.layout.ContentScale
 import java.io.File
 import java.text.SimpleDateFormat
@@ -72,15 +74,17 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
 
     var isArScanning by remember { mutableStateOf(false) }
     var rawPolygonToEdit by remember { mutableStateOf<List<Point>?>(null) }
-    var pendingPolygon by remember { mutableStateOf<List<Point>?>(null) }
+    var pendingGridPoints by remember { mutableStateOf<List<Point>>(emptyList()) }
+    var pendingScanResult by remember { mutableStateOf<ScanResult?>(null) }
 
     // 退出管理模式时清空选择
     LaunchedEffect(isManageMode) { if (!isManageMode) selectedIds = emptySet() }
 
-    LaunchedEffect(pendingPolygon) {
-        if (pendingPolygon != null) {
-            rawPolygonToEdit = pendingPolygon
-            pendingPolygon = null
+    LaunchedEffect(pendingScanResult) {
+        if (pendingScanResult != null) {
+            rawPolygonToEdit = pendingScanResult!!.boundary
+            pendingGridPoints = pendingScanResult!!.gridPoints
+            pendingScanResult = null
             isArScanning = false
         }
     }
@@ -97,7 +101,7 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
         BackHandler(enabled = isArScanning) { isArScanning = false }
         ArScannerScreen(
             sharedViewModel = sharedViewModel,
-            onComplete = { rawPolygon -> pendingPolygon = rawPolygon },
+            onComplete = { scanResult -> pendingScanResult = scanResult },
             onCancel = { isArScanning = false }
         )
     }
@@ -107,35 +111,29 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
             BackHandler { rawPolygonToEdit = null }
             MapVerificationScreen(
                 rawPolygon = rawPolygonToEdit!!,
+                rawObstacles = emptyList(),
                 sharedViewModel = sharedViewModel,
-                onSaveSuccess = { rawPolygonToEdit = null },
-                onDiscard = { rawPolygonToEdit = null },
-                onRescan = { rawPolygonToEdit = null; isArScanning = true }
+                onSaveSuccess = { rawPolygonToEdit = null; pendingGridPoints = emptyList() },
+                onDiscard = { rawPolygonToEdit = null; pendingGridPoints = emptyList() },
+                onRescan = { rawPolygonToEdit = null; pendingGridPoints = emptyList(); isArScanning = true }
             )
-        } else if (sharedViewModel.isCollectingMode) {
-            BackHandler { sharedViewModel.isCollectingMode = false }
-            AnimatedContent(
-                targetState = sharedViewModel.isCollectingMode,
-                label = "CollectTransition",
-                transitionSpec = {
-                    if (targetState) {
-                        slideInVertically(tween(350)) { it / 6 } + fadeIn(tween(350)) togetherWith
-                        fadeOut(tween(200))
-                    } else {
-                        fadeIn(tween(200)) togetherWith
-                        slideOutVertically(tween(350)) { it / 6 } + fadeOut(tween(350))
-                    }
-                }
-            ) { collecting ->
-                if (collecting) {
-                    CollectionMapScreen(
-                        sharedViewModel = sharedViewModel,
-                        onBackClick = { sharedViewModel.isCollectingMode = false },
-                        bottomPadding = bottomPadding
-                    )
-                }
-            }
         } else {
+            // 采集界面：AnimatedVisibility 始终挂在组合树上，保证进入/退出动画都能播放
+            if (sharedViewModel.isCollectingMode) BackHandler { sharedViewModel.isCollectingMode = false }
+            AnimatedVisibility(
+                visible = sharedViewModel.isCollectingMode,
+                enter = slideInVertically(tween(350)) { it / 6 } + fadeIn(tween(350)),
+                exit  = slideOutVertically(tween(300)) { it / 6 } + fadeOut(tween(250))
+            ) {
+                CollectionMapScreen(
+                    sharedViewModel = sharedViewModel,
+                    onBackClick = { sharedViewModel.isCollectingMode = false },
+                    bottomPadding = bottomPadding
+                )
+            }
+
+            // 普通地图列表 UI（采集界面显示时被遮盖，退出动画结束后才显示）
+            if (!sharedViewModel.isCollectingMode) {
             // 管理模式拦截物理返回
             if (isManageMode) BackHandler { isManageMode = false }
 
@@ -322,6 +320,7 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
                     dismissButton = { TextButton(onClick = { showBatchDeleteDialog = false }) { Text("取消") } }
                 )
             }
+            } // end if (!isCollectingMode)
         } // end else (normal map list UI)
     } // end if (!isArScanning)
 }
@@ -870,24 +869,25 @@ fun CollectionMapScreen(sharedViewModel: SharedViewModel, onBackClick: () -> Uni
         currentMap?.polygonBounds?.let { Converters().toPointList(it) } ?: emptyList()
     }
 
-    val gridCoordinates = remember(w, l, s, mapPolygon) {
-        val pts = mutableListOf<Point>()
-        var x = 0f
-        while (x <= w) {
-            var y = 0f
-            while (y <= l) {
-                val pt = Point(x.toDouble(), y.toDouble())
-                // AR 扫描图：只保留多边形内部的格点
-                if (mapPolygon.size < 3 || pointInPolygon(pt, mapPolygon)) {
-                    pts.add(pt)
+    // 异步计算格点，避免大地图首次进入时主线程卡顿
+    var gridCoordinates by remember(w, l, s, mapPolygon) { mutableStateOf(listOf<Point>()) }
+    LaunchedEffect(w, l, s, mapPolygon) {
+        val pts = withContext(Dispatchers.Default) {
+            val list = mutableListOf<Point>()
+            var x = 0f
+            while (x <= w) {
+                var y = 0f
+                while (y <= l) {
+                    val pt = Point(x.toDouble(), y.toDouble())
+                    if (mapPolygon.size < 3 || pointInPolygon(pt, mapPolygon)) list.add(pt)
+                    y += s
                 }
-                y += s
+                x += s
             }
-            x += s
+            list
         }
-        pts
+        gridCoordinates = pts
     }
-
     var selectedPoint by remember { mutableStateOf<Point?>(null) }
     var isRecording by remember { mutableStateOf(false) }
     var collectionProgress by remember { mutableFloatStateOf(0f) }
