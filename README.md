@@ -4,6 +4,7 @@
 ![Jetpack Compose](https://img.shields.io/badge/Jetpack%20Compose-Material%203-4CAF50.svg?logo=android)
 ![BLE](https://img.shields.io/badge/Bluetooth-BLE%204.0%2B-0082FC.svg?logo=bluetooth)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+[![ARCore Inside](https://img.shields.io/badge/AR_Core-INSIDE-blueviolet?style=to-the-badge&logo=google-ar&logoColor=white)](https://developers.google.com/ar)
 
 Echo 是一款 Android 平台的低功耗蓝牙(BLE)室内定位应用，其核心功能基于指纹算法和A*寻路算法，为缺少 GPS 信号的室内环境设计。
 
