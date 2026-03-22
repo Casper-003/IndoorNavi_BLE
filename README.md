@@ -80,4 +80,4 @@ com.example.echo/
 
 ##  开源协议
 This project is licensed under the MIT License.
-## *Developed with ❤️ by Casper-003 . Collaborated with Google Gemini & Claude Code*
+## *Developed with ❤️ by Casper-003 .*
