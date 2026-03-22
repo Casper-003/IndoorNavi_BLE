@@ -1,6 +1,5 @@
 package com.example.echo
 
-import android.Manifest
 import android.annotation.SuppressLint
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -15,10 +14,12 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CellTower
 import androidx.compose.material.icons.rounded.Explore
-import androidx.compose.material.icons.rounded.Fingerprint
+import androidx.compose.material.icons.rounded.Map
 import androidx.compose.material.icons.rounded.Settings
+import androidx.activity.compose.BackHandler
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
@@ -30,6 +31,13 @@ import androidx.core.view.WindowCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import android.graphics.Color as AndroidColor
+import android.Manifest
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 
 @SuppressLint("InlinedApi")
 class MainActivity : ComponentActivity() {
@@ -43,7 +51,7 @@ class MainActivity : ComponentActivity() {
         )
         setContent { MainAppRouter() }
         permissionLauncher.launch(
-            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACTIVITY_RECOGNITION)
+            arrayOf(Manifest.permission.CAMERA, Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACTIVITY_RECOGNITION)
         )
     }
 }
@@ -87,6 +95,7 @@ fun MainAppRouter() {
                 surface = bg,
                 onSurface = Color.White.copy(alpha = 0.87f),
                 surfaceVariant = seed.copy(alpha = 0.1f).compositeOver(surf),
+                surfaceContainer = Color(0xFF1E1E1E),
                 onSurfaceVariant = Color.White.copy(alpha = 0.8f),
                 outline = Color.White.copy(alpha = 0.2f),
                 outlineVariant = Color.White.copy(alpha = 0.12f)
@@ -130,20 +139,93 @@ fun MainAppRouter() {
     MaterialTheme(colorScheme = colorScheme) { Surface(color = MaterialTheme.colorScheme.background) { MainAppScreen(sharedViewModel) } }
 }
 
+
 @Composable
 fun MainAppScreen(sharedViewModel: SharedViewModel) {
     val pagerState = rememberPagerState(pageCount = { 4 })
     val coroutineScope = rememberCoroutineScope()
 
-    Scaffold(
-        bottomBar = {
+    // 非首页时，返回键跳回地图页（index=1）；地图页时正常退出
+    val currentPage = pagerState.currentPage
+    if (currentPage != 1) {
+        BackHandler {
+            coroutineScope.launch { pagerState.animateScrollToPage(1) }
+        }
+    }
+
+    // pendingScanResult 在顶层处理，避免 FingerprintManagerScreen 内部状态与顶层不同步
+    LaunchedEffect(sharedViewModel.pendingScanResult) {
+        val result = sharedViewModel.pendingScanResult ?: return@LaunchedEffect
+        sharedViewModel.rawPolygonToEdit = result.boundary
+        sharedViewModel.pendingGridPoints = result.gridPoints
+        sharedViewModel.pendingScanResult = null
+        sharedViewModel.isArScanning = false
+    }
+
+    // 导航栏显隐由 isArScanning / rawPolygonToEdit 同步驱动
+    sharedViewModel.isBottomBarVisible = !(sharedViewModel.isArScanning || sharedViewModel.rawPolygonToEdit != null)
+
+    // 导航栏高度固定 72dp，不用 Scaffold bottomBar，避免 innerPadding 动态变化引起内容区抖动
+    val navBarHeight = 72.dp
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        // 内容区：底部固定预留 navBarHeight 的 padding，不随导航栏动画变化
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize().padding(bottom = navBarHeight),
+            userScrollEnabled = false,
+            beyondViewportPageCount = 3
+        ) { page ->
+            when (page) {
+                0 -> BaseStationManagerScreen(sharedViewModel, 0.dp)
+                1 -> FingerprintManagerScreen(sharedViewModel, 0.dp)
+                2 -> PositioningTestScreen(sharedViewModel, 0.dp)
+                3 -> SettingsScreen(sharedViewModel, 0.dp)
+            }
+        }
+
+        // AR 扫描页：全屏悬浮在顶层，完全脱离 Pager 的 padding 约束
+        AnimatedVisibility(
+            visible = sharedViewModel.isArScanning,
+            enter = slideInVertically(animationSpec = tween(350)) { it / 6 } + fadeIn(tween(350)),
+            exit  = slideOutVertically(animationSpec = tween(250)) { it / 6 } + fadeOut(tween(250)),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            BackHandler(enabled = sharedViewModel.isArScanning) { sharedViewModel.isArScanning = false }
+            ArScannerScreen(
+                sharedViewModel = sharedViewModel,
+                onComplete = { scanResult -> sharedViewModel.pendingScanResult = scanResult },
+                onCancel   = { sharedViewModel.isArScanning = false }
+            )
+        }
+
+        // 精修页：同样全屏悬浮，脱离 Pager padding
+        if (!sharedViewModel.isArScanning && sharedViewModel.rawPolygonToEdit != null) {
+            BackHandler { sharedViewModel.rawPolygonToEdit = null }
+            MapVerificationScreen(
+                rawPolygon  = sharedViewModel.rawPolygonToEdit!!,
+                rawObstacles = emptyList(),
+                sharedViewModel = sharedViewModel,
+                onSaveSuccess = { sharedViewModel.rawPolygonToEdit = null; sharedViewModel.pendingGridPoints = emptyList() },
+                onDiscard     = { sharedViewModel.rawPolygonToEdit = null; sharedViewModel.pendingGridPoints = emptyList() },
+                onRescan      = { sharedViewModel.rawPolygonToEdit = null; sharedViewModel.pendingGridPoints = emptyList(); sharedViewModel.isArScanning = true }
+            )
+        }
+
+        // 导航栏悬浮在内容上方，动画只影响自身位置，不影响内容区 padding
+        AnimatedVisibility(
+            visible = sharedViewModel.isBottomBarVisible,
+            enter = slideInVertically(initialOffsetY = { it }),
+            exit  = slideOutVertically(targetOffsetY = { it }),
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
             NavigationBar(
-                modifier = Modifier.height(72.dp), // 🌟 调整底栏高度
-                containerColor = MaterialTheme.colorScheme.surface,
-                tonalElevation = 0.dp
+                modifier = Modifier.height(navBarHeight),
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                tonalElevation = 3.dp
             ) {
-                val navIcons = listOf(Icons.Rounded.CellTower, Icons.Rounded.Fingerprint, Icons.Rounded.Explore, Icons.Rounded.Settings)
-                val navLabels = listOf("基站", "指纹", "定位", "设置")
+                val navIcons = listOf(Icons.Rounded.CellTower, Icons.Rounded.Map, Icons.Rounded.Explore, Icons.Rounded.Settings)
+                val navLabels = listOf("基站", "地图", "定位", "设置")
                 val selectedTabIndex = pagerState.targetPage
 
                 navIcons.forEachIndexed { index, icon ->
@@ -163,21 +245,6 @@ fun MainAppScreen(sharedViewModel: SharedViewModel) {
                         )
                     )
                 }
-            }
-        }
-    ) { innerPadding ->
-        HorizontalPager(
-            state = pagerState,
-            // 🌟 核心修复：在此处统一消费 Bottom Padding，解决地图被挡住的问题
-            modifier = Modifier.fillMaxSize().padding(bottom = innerPadding.calculateBottomPadding()),
-            userScrollEnabled = false,
-            beyondViewportPageCount = 3
-        ) { page ->
-            when (page) {
-                0 -> BaseStationManagerScreen(sharedViewModel, 0.dp)
-                1 -> FingerprintManagerScreen(sharedViewModel, 0.dp)
-                2 -> PositioningTestScreen(sharedViewModel, 0.dp)
-                3 -> SettingsScreen(sharedViewModel, 0.dp)
             }
         }
     }
