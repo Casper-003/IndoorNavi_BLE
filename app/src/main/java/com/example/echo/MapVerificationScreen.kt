@@ -39,6 +39,7 @@ import kotlin.math.*
 @Composable
 fun MapVerificationScreen(
     rawPolygon: List<Point>,
+    rawObstacles: List<Point> = emptyList(),
     sharedViewModel: SharedViewModel,
     onSaveSuccess: () -> Unit,
     onDiscard: () -> Unit,
@@ -48,6 +49,7 @@ fun MapVerificationScreen(
     val coroutineScope = rememberCoroutineScope()
 
     var editedPolygon by remember { mutableStateOf(rawPolygon) }
+    var showObstacles by remember { mutableStateOf(rawObstacles.isNotEmpty()) }
 
     // 旋转滑块状态（±180°，松开时烘焙进多边形坐标）
     var rotationDeg by remember { mutableFloatStateOf(0f) }
@@ -109,6 +111,24 @@ fun MapVerificationScreen(
                                 polygon = normalizedPolygon,
                                 bgImageUri = bgImageUri?.toString() ?: ""
                             )
+                            // 障碍物坐标与多边形同步归一化，写入 DB
+                            if (rawObstacles.isNotEmpty()) {
+                                val normalizedObstacles = rawObstacles.map {
+                                    Point(it.x - minX, it.y - minY)
+                                }
+                                // createNewMap 内部 switchActiveMap 是异步的，
+                                // 通过 currentActiveMapId 状态流感知新 mapId
+                                coroutineScope.launch {
+                                    // 等待 currentActiveMapId 变化（最多等 2s）
+                                    var waited = 0
+                                    while (sharedViewModel.currentActiveMapId.value == null && waited < 2000) {
+                                        kotlinx.coroutines.delay(50); waited += 50
+                                    }
+                                    sharedViewModel.currentActiveMapId.value?.let { mapId ->
+                                        sharedViewModel.saveObstaclesForMap(mapId, normalizedObstacles)
+                                    }
+                                }
+                            }
                             onSaveSuccess()
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50)),
@@ -180,6 +200,36 @@ fun MapVerificationScreen(
                         .fillMaxSize()
                         .graphicsLayer { rotationZ = rotationDeg + snap90Anim.value }
                 )
+
+                // 障碍物叠层：橙色方格，与多边形同步旋转
+                if (showObstacles && rawObstacles.isNotEmpty() && editedPolygon.size >= 2) {
+                    val obstacleColor = Color(0xFFFF7043).copy(alpha = 0.7f)
+                    Canvas(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { rotationZ = rotationDeg + snap90Anim.value }
+                    ) {
+                        val minX = editedPolygon.minOf { it.x }
+                        val maxX = editedPolygon.maxOf { it.x }
+                        val minY = editedPolygon.minOf { it.y }
+                        val maxY = editedPolygon.maxOf { it.y }
+                        val rangeX = (maxX - minX).coerceAtLeast(0.01)
+                        val rangeY = (maxY - minY).coerceAtLeast(0.01)
+                        val scale = minOf(size.width / rangeX.toFloat(), size.height / rangeY.toFloat()) * 0.8f
+                        val offX = size.width / 2f - ((minX + maxX) / 2f * scale).toFloat()
+                        val offY = size.height / 2f - ((minY + maxY) / 2f * scale).toFloat()
+                        val cellPx = 0.15f * scale
+                        rawObstacles.forEach { obs ->
+                            val cx = offX + obs.x.toFloat() * scale
+                            val cy = offY + obs.y.toFloat() * scale
+                            drawRect(
+                                color = obstacleColor,
+                                topLeft = Offset(cx - cellPx / 2, cy - cellPx / 2),
+                                size = androidx.compose.ui.geometry.Size(cellPx, cellPx)
+                            )
+                        }
+                    }
+                }
             }
 
             // 旋转微调滑块
@@ -297,6 +347,32 @@ fun MapVerificationScreen(
                         }
                         Spacer(modifier = Modifier.height(4.dp))
                         Text("重新扫描", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                    }
+
+                    if (rawObstacles.isNotEmpty()) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            FilledIconButton(
+                                onClick = { showObstacles = !showObstacles },
+                                colors = IconButtonDefaults.filledIconButtonColors(
+                                    containerColor = if (showObstacles) Color(0xFFFF7043)
+                                                     else MaterialTheme.colorScheme.surfaceVariant
+                                )
+                            ) {
+                                Icon(
+                                    Icons.Default.Warning,
+                                    contentDescription = "显示/隐藏障碍物",
+                                    tint = if (showObstacles) Color.White
+                                           else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                "障碍(${rawObstacles.size})",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (showObstacles) Color(0xFFFF7043)
+                                        else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
