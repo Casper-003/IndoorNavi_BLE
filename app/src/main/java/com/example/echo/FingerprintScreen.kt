@@ -31,6 +31,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.compositeOver
@@ -66,6 +67,7 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
     var selectedMap by remember { mutableStateOf<MapEntity?>(null) }
     var showNewMapDialog by remember { mutableStateOf(false) }
     var showManualMapDialog by remember { mutableStateOf(false) }
+    var isFabExpanded by remember { mutableStateOf(false) }
 
     // 管理模式
     var isManageMode by remember { mutableStateOf(false) }
@@ -95,8 +97,9 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
 
             // 普通地图列表 UI（采集界面显示时被遮盖，退出动画结束后才显示）
             if (!sharedViewModel.isCollectingMode) {
-            // 管理模式拦截物理返回
+            // 管理模式拦截物理返回；FAB 展开时也拦截
             if (isManageMode) BackHandler { isManageMode = false }
+            if (isFabExpanded) BackHandler { isFabExpanded = false }
 
             SharedTransitionLayout {
                 AnimatedContent(
@@ -105,8 +108,30 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
                     transitionSpec = { fadeIn(tween(500)) togetherWith fadeOut(tween(500)) }
                 ) { targetMap ->
                     if (targetMap == null) {
+                        Box(modifier = Modifier.fillMaxSize()) {
                         Scaffold(
                             containerColor = Color.Transparent,
+                            floatingActionButton = {
+                                if (!isManageMode) {
+                                    val fabRotation by androidx.compose.animation.core.animateFloatAsState(
+                                        targetValue = if (isFabExpanded) 45f else 0f,
+                                        animationSpec = tween(300),
+                                        label = "fabRotation"
+                                    )
+                                    FloatingActionButton(
+                                        onClick = { isFabExpanded = !isFabExpanded },
+                                        containerColor = MaterialTheme.colorScheme.primary,
+                                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                                        modifier = Modifier.padding(bottom = bottomPadding)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Add,
+                                            contentDescription = "新建",
+                                            modifier = Modifier.rotate(fabRotation)
+                                        )
+                                    }
+                                }
+                            },
                             topBar = {
                                 if (isManageMode) {
                                     // ── 管理模式顶栏 ──
@@ -166,23 +191,14 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
                                             IconButton(onClick = { isManageMode = true }) {
                                                 Icon(Icons.Default.Checklist, contentDescription = "管理")
                                             }
-                                            FilledTonalIconButton(
-                                                onClick = { showNewMapDialog = true },
-                                                colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                                    containerColor = MaterialTheme.colorScheme.primary,
-                                                    contentColor = MaterialTheme.colorScheme.onPrimary
-                                                )
-                                            ) {
-                                                Icon(Icons.Default.Add, contentDescription = "新建")
-                                            }
                                         },
-                                        colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+                                        colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
                                     )
                                 }
                             }
                         ) { innerPadding ->
                             if (maps.isEmpty()) {
-                                EmptyMapState(Modifier.fillMaxSize().padding(innerPadding)) { showNewMapDialog = true }
+                                EmptyMapState(Modifier.fillMaxSize().padding(innerPadding)) { isFabExpanded = true }
                             } else {
                                 LazyVerticalGrid(
                                     columns = GridCells.Adaptive(minSize = 160.dp),
@@ -222,6 +238,72 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
                                 }
                             }
                         }
+
+                        // ── 背景遮罩 ──
+                        AnimatedVisibility(
+                            visible = isFabExpanded,
+                            enter = fadeIn(tween(200)),
+                            exit  = fadeOut(tween(200))
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black.copy(alpha = 0.5f))
+                                    .clickable { isFabExpanded = false }
+                            )
+                        }
+
+                        // ── 弹出菜单选项 ──
+                        val menuItems = listOf(
+                            Triple(Icons.Default.Straighten, "手动输入尺寸") { isFabExpanded = false; showManualMapDialog = true },
+                            Triple(Icons.Default.ViewInAr,   "AR 实景测绘")  { isFabExpanded = false; sharedViewModel.isArScanning = true }
+                        )
+                        Column(
+                            horizontalAlignment = Alignment.End,
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(end = 16.dp, bottom = bottomPadding + 88.dp)
+                        ) {
+                            menuItems.forEachIndexed { index, (icon, label, action) ->
+                                val delay = index * 50
+                                androidx.compose.animation.AnimatedVisibility(
+                                    visible = isFabExpanded,
+                                    enter = fadeIn(tween(200, delayMillis = delay)) + slideInVertically(tween(250, delayMillis = delay)) { it / 2 },
+                                    exit  = fadeOut(tween(150)) + slideOutVertically(tween(150)) { it / 2 }
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .padding(bottom = 12.dp)
+                                            .clickable(onClick = action)
+                                    ) {
+                                        // 标签
+                                        Surface(
+                                            shape = RoundedCornerShape(50),
+                                            color = MaterialTheme.colorScheme.surfaceContainer,
+                                            tonalElevation = 4.dp,
+                                            modifier = Modifier.padding(end = 12.dp)
+                                        ) {
+                                            Text(
+                                                text = label,
+                                                style = MaterialTheme.typography.labelLarge,
+                                                fontWeight = FontWeight.SemiBold,
+                                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                                            )
+                                        }
+                                        // 小 FAB
+                                        SmallFloatingActionButton(
+                                            onClick = action,
+                                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                        ) {
+                                            Icon(icon, contentDescription = label)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        } // end Box
                     } else {
                         BackHandler { selectedMap = null }
                         MapDetailScreen(

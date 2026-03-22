@@ -12,10 +12,14 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.CellTower
-import androidx.compose.material.icons.rounded.Explore
-import androidx.compose.material.icons.rounded.Map
-import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.filled.CellTower
+import androidx.compose.material.icons.filled.Explore
+import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.CellTower
+import androidx.compose.material.icons.outlined.Explore
+import androidx.compose.material.icons.outlined.Map
+import androidx.compose.material.icons.outlined.Settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -224,21 +228,22 @@ fun MainAppScreen(sharedViewModel: SharedViewModel) {
                 containerColor = MaterialTheme.colorScheme.surfaceContainer,
                 tonalElevation = 3.dp
             ) {
-                val navIcons = listOf(Icons.Rounded.CellTower, Icons.Rounded.Map, Icons.Rounded.Explore, Icons.Rounded.Settings)
+                val navIconsFilled   = listOf(Icons.Filled.CellTower,   Icons.Filled.Map,   Icons.Filled.Explore,   Icons.Filled.Settings)
+                val navIconsOutlined = listOf(Icons.Outlined.CellTower, Icons.Outlined.Map, Icons.Outlined.Explore, Icons.Outlined.Settings)
                 val navLabels = listOf("基站", "地图", "定位", "设置")
                 val selectedTabIndex = pagerState.targetPage
 
-                navIcons.forEachIndexed { index, icon ->
+                navLabels.forEachIndexed { index, label ->
                     val isSelected = selectedTabIndex == index
                     NavigationBarItem(
                         selected = isSelected,
                         onClick = { coroutineScope.launch { pagerState.animateScrollToPage(index) } },
-                        icon = { Icon(imageVector = icon, contentDescription = navLabels[index]) },
-                        label = { Text(text = navLabels[index], style = MaterialTheme.typography.labelSmall, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium) },
+                        icon = { Icon(imageVector = if (isSelected) navIconsFilled[index] else navIconsOutlined[index], contentDescription = label) },
+                        label = { Text(text = label, style = MaterialTheme.typography.labelSmall, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium) },
                         alwaysShowLabel = true,
                         colors = NavigationBarItemDefaults.colors(
-                            indicatorColor = MaterialTheme.colorScheme.primary,
-                            selectedIconColor = MaterialTheme.colorScheme.onPrimary,
+                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                            selectedIconColor = MaterialTheme.colorScheme.primary,
                             selectedTextColor = MaterialTheme.colorScheme.primary,
                             unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                             unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant

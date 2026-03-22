@@ -1,8 +1,12 @@
 package com.example.echo
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
@@ -10,10 +14,13 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults.Indicator
@@ -53,6 +60,14 @@ fun BaseStationManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
     val isWideScreen = configuration.screenWidthDp > 600
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
+    // 按钮形状动画：扫描中→小圆角矩形，停止时→大圆角胶囊
+    val buttonCornerRadius by animateDpAsState(
+        targetValue = if (isScanning) 16.dp else 50.dp,
+        animationSpec = tween(durationMillis = 400),
+        label = "buttonCorner"
+    )
+    val buttonShape = RoundedCornerShape(buttonCornerRadius)
+
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection), containerColor = Color.Transparent,
         topBar = { TopAppBar(title = { Text("基站管理", fontWeight = FontWeight.Bold) }, scrollBehavior = scrollBehavior, windowInsets = WindowInsets.statusBars, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface, scrolledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f).compositeOver(MaterialTheme.colorScheme.surface), titleContentColor = MaterialTheme.colorScheme.onSurface)) }
@@ -69,13 +84,47 @@ fun BaseStationManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
         if (isWideScreen) {
             Row(modifier = Modifier.fillMaxSize()) {
                 Column(modifier = Modifier.weight(1.5f)) {
-                    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).padding(top = innerPadding.calculateTopPadding()), verticalAlignment = Alignment.CenterVertically) {
-                        Button(onClick = { if (isScanning) scanner.stopScan() else scanner.startScan(); isScanning = !isScanning }, modifier = Modifier.weight(1f).height(64.dp), shape = CircleShape, colors = ButtonDefaults.buttonColors(containerColor = if (isScanning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)) { Text(text = if (isScanning) "⏹ 停止扫描" else "▶ 开始扫描", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-                        Spacer(modifier = Modifier.width(20.dp))
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("发现设备", style = MaterialTheme.typography.labelMedium, color = Color.Gray); Text(text = "${unselectedDevices.size}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary) }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                            .padding(top = innerPadding.calculateTopPadding()),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Button(
+                            onClick = { if (isScanning) scanner.stopScan() else scanner.startScan(); isScanning = !isScanning },
+                            modifier = Modifier.fillMaxWidth().height(100.dp),
+                            shape = buttonShape,
+                            colors = ButtonDefaults.buttonColors(containerColor = if (isScanning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+                        ) {
+                            Text(
+                                text = if (isScanning) "停止扫描" else "开始扫描",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
-                    PullToRefreshBox(isRefreshing = isRefreshing, onRefresh = { coroutineScope.launch { isRefreshing = true; scanner.clearDevices(); delay(500); isRefreshing = false } }, modifier = Modifier.fillMaxSize()) {
-                        LazyColumn(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = bottomPadding)) { items(unselectedDevices, key = { it.macAddress }) { device -> DeviceItemCard(device = device, modifier = Modifier.animateItem()) { onSelectionChange(selectedDevices + (device.macAddress to device)) } } }
+                    val wideListState = rememberLazyListState()
+                    val showWideBackToTop by remember {
+                        derivedStateOf { wideListState.firstVisibleItemIndex >= 10 }
+                    }
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        PullToRefreshBox(isRefreshing = isRefreshing, onRefresh = { coroutineScope.launch { isRefreshing = true; scanner.clearDevices(); delay(500); isRefreshing = false } }, modifier = Modifier.fillMaxSize()) {
+                            LazyColumn(state = wideListState, modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = bottomPadding)) { items(unselectedDevices, key = { it.macAddress }) { device -> DeviceItemCard(device = device, modifier = Modifier.animateItem()) { onSelectionChange(selectedDevices + (device.macAddress to device)) } } }
+                        }
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = showWideBackToTop,
+                            enter = fadeIn() + scaleIn(),
+                            exit = fadeOut() + scaleOut(),
+                            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = bottomPadding + 16.dp)
+                        ) {
+                            FloatingActionButton(
+                                onClick = { coroutineScope.launch { wideListState.animateScrollToItem(0) } },
+                                containerColor = MaterialTheme.colorScheme.primaryContainer
+                            ) {
+                                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "回到顶部", tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                            }
+                        }
                     }
                 }
                 // 🌟 平板模式动画滑入购物车
@@ -92,14 +141,48 @@ fun BaseStationManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
                 }
             }
         } else {
+            val listState = rememberLazyListState()
+            val showBackToTop by remember {
+                derivedStateOf { listState.firstVisibleItemIndex >= 10 }
+            }
             Column(modifier = Modifier.fillMaxSize()) {
                 Spacer(modifier = Modifier.height(innerPadding.calculateTopPadding()))
-                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Button(onClick = { if (isScanning) scanner.stopScan() else scanner.startScan(); isScanning = !isScanning }, modifier = Modifier.weight(1f).height(64.dp), shape = CircleShape, colors = ButtonDefaults.buttonColors(containerColor = if (isScanning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)) { Text(text = if (isScanning) "⏹ 停止扫描" else "▶ 开始扫描", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-                    Spacer(modifier = Modifier.width(20.dp)); Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("发现设备", style = MaterialTheme.typography.labelMedium, color = Color.Gray); Text(text = "${unselectedDevices.size}", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary) }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Button(
+                        onClick = { if (isScanning) scanner.stopScan() else scanner.startScan(); isScanning = !isScanning },
+                        modifier = Modifier.height(80.dp).fillMaxWidth(),
+                        shape = buttonShape,
+                        colors = ButtonDefaults.buttonColors(containerColor = if (isScanning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+                    ) {
+                        Text(
+                            text = if (isScanning) "停止扫描" else "开始扫描",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
-                PullToRefreshBox(isRefreshing = isRefreshing, onRefresh = { coroutineScope.launch { isRefreshing = true; scanner.clearDevices(); delay(500); isRefreshing = false } }, state = pullRefreshState, indicator = { Indicator(modifier = Modifier.align(Alignment.TopCenter), isRefreshing = isRefreshing, state = pullRefreshState) }, modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    LazyColumn(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp), contentPadding = PaddingValues(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { items(unselectedDevices, key = { it.macAddress }) { device -> DeviceItemCard(device = device, modifier = Modifier.animateItem()) { onSelectionChange(selectedDevices + (device.macAddress to device)) } } }
+                Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp).clip(RoundedCornerShape(16.dp))) {
+                    PullToRefreshBox(isRefreshing = isRefreshing, onRefresh = { coroutineScope.launch { isRefreshing = true; scanner.clearDevices(); delay(500); isRefreshing = false } }, state = pullRefreshState, indicator = { Indicator(modifier = Modifier.align(Alignment.TopCenter), isRefreshing = isRefreshing, state = pullRefreshState) }, modifier = Modifier.fillMaxSize()) {
+                        LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(horizontal = 0.dp), contentPadding = PaddingValues(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { items(unselectedDevices, key = { it.macAddress }) { device -> DeviceItemCard(device = device, modifier = Modifier.animateItem()) { onSelectionChange(selectedDevices + (device.macAddress to device)) } } }
+                    }
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = showBackToTop,
+                        enter = fadeIn() + scaleIn(),
+                        exit = fadeOut() + scaleOut(),
+                        modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 16.dp)
+                    ) {
+                        FloatingActionButton(
+                            onClick = { coroutineScope.launch { listState.animateScrollToItem(0) } },
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "回到顶部", tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                        }
+                    }
                 }
                 AnimatedVisibility(visible = selectedDevices.isNotEmpty()) { Column(modifier = Modifier.fillMaxWidth()) { HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)); cartUI(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)), false) } }
                 Spacer(modifier = Modifier.height(bottomPadding))
