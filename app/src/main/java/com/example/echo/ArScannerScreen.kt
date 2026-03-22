@@ -12,15 +12,18 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -57,7 +60,9 @@ data class ScanResult(
 )
 
 // =====================================================================================
-// ArScannerScreen — 阶段一：基于 Plane Merging 的全自动边界扫描
+// ArScannerScreen — 手动打点建图模式
+// 复刻 ARCoreMeasuredDistance 的交互逻辑：
+//   点击地面放锚点 → 相邻连线 → 显示边长 → 支持撤销 → 完成后闭合多边形输出
 // =====================================================================================
 
 @Composable
@@ -72,33 +77,43 @@ fun ArScannerScreen(
     val coroutineScope = rememberCoroutineScope()
 
     // ── 状态 ──────────────────────────────────────────────────────────────────────────
-    var isTracking by remember { mutableStateOf(false) }
-    // 最新一帧的最大水平面多边形（世界坐标），500ms 刷新到 UI
-    var planeSnapshot by remember { mutableStateOf(listOf<Point>()) }
-    // 实时面积（m²）
-    var currentAreaM2 by remember { mutableDoubleStateOf(0.0) }
-    // 收敛状态
-    var isConverged by remember { mutableStateOf(false) }
-    // 渐入动画
-    var isVisible by remember { mutableStateOf(false) }
+    var isTracking    by remember { mutableStateOf(false) }
+    var anchorPoints  by remember { mutableStateOf(listOf<Point>()) }
+    var segmentLengths by remember { mutableStateOf(listOf<Double>()) }
+
+    // 动画阶段：uiReady = UI 元素飞入；cameraReady = 摄像头开启
+    var uiReady     by remember { mutableStateOf(false) }
+    var cameraReady by remember { mutableStateOf(false) }
 
     val sessionHolder = remember { ArSessionHolder() }
     var glView by remember { mutableStateOf<ArGLSurfaceView?>(null) }
 
-    // ── 面积收敛判定（每 500ms tick 一次）────────────────────────────────────────────
-    // 保存近 3 秒（6 次 500ms）的面积历史，判断增长是否 < 0.05m²
-    val areaHistory = remember { ArrayDeque<Double>(7) }
+    // ── 进入序列：50ms 后 UI 飞入，再等 400ms 动画播完后开摄像头 ──────────────────────
+    LaunchedEffect(Unit) {
+        delay(50)
+        uiReady = true
+        delay(400)
+        cameraReady = true
+    }
 
-    // ── AR Session 生命周期 ────────────────────────────────────────────────────────────
+    // ── cameraReady 变为 true 时，真正 resume GLSurfaceView ────────────────────────────
+    LaunchedEffect(cameraReady) {
+        if (cameraReady) {
+            glView?.onResume()
+        }
+    }
+
+    // ── AR Session 创建（不依赖 cameraReady，提前初始化省时间）──────────────────────────
     DisposableEffect(Unit) {
         if (activity != null) sessionHolder.create(activity)
         onDispose { sessionHolder.close() }
     }
 
+    // ── 生命周期：仅在 cameraReady 后才真正 resume/pause ──────────────────────────────
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> glView?.onResume()
+                Lifecycle.Event.ON_RESUME -> { if (cameraReady) glView?.onResume() }
                 Lifecycle.Event.ON_PAUSE  -> glView?.onPause()
                 else -> {}
             }
@@ -107,67 +122,54 @@ fun ArScannerScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // ── 500ms 周期：快照 + 面积收敛判定 ───────────────────────────────────────────────
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(500)
-            val snap = sessionHolder.latestFloorPolygon
-            if (snap.isNotEmpty()) {
-                planeSnapshot = snap
-                val area = shoelaceArea(snap)
-                currentAreaM2 = area
-
-                // 维护历史队列（最多 7 项，覆盖 3.5 秒）
-                if (areaHistory.size >= 7) areaHistory.removeFirst()
-                areaHistory.addLast(area)
-
-                // 收敛条件：面积 > 2m² 且 最近 6 次采样（3秒）增长 < 0.05m²
-                if (!isConverged && areaHistory.size >= 6 && area > 2.0) {
-                    val growth = areaHistory.last() - areaHistory[areaHistory.size - 6]
-                    if (growth < 0.05) {
-                        isConverged = true
-                        // 震动反馈
-                        triggerVibration(context)
-                    }
-                }
-            }
-        }
-    }
-
-    // 渐入动画
-    LaunchedEffect(Unit) {
-        delay(50)
-        isVisible = true
-    }
-
-    // 采集间距（从 ViewModel 读，默认 1.0m）
     val gridStepM = remember(sharedViewModel.gridSpacing) {
         sharedViewModel.gridSpacing.toDoubleOrNull()?.coerceIn(0.5, 3.0) ?: 1.0
     }
+    val canFinish = anchorPoints.size >= 3
+    val canUndo   = anchorPoints.isNotEmpty()
 
-    androidx.compose.animation.AnimatedVisibility(
-        visible = isVisible,
-        enter = fadeIn(animationSpec = tween(400)),
-        exit  = fadeOut(animationSpec = tween(200))
-    ) {
-        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
-            // ── 1. GLSurfaceView 相机 + 平面渲染层 ────────────────────────────────────
-            AndroidView(
-                factory = { ctx ->
-                    ArGLSurfaceView(ctx, sessionHolder).also { view ->
-                        glView = view
-                        view.onTrackingChanged = { tracking -> isTracking = tracking }
-                        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
-                            view.onResume()
+        // ── 1. GLSurfaceView（始终存在，cameraReady 前不 resume）──────────────────────
+        AndroidView(
+            factory = { ctx ->
+                ArGLSurfaceView(ctx, sessionHolder).also { view ->
+                    glView = view
+                    view.onTrackingChanged = { tracking -> isTracking = tracking }
+                    view.onTapResult = { anchor, worldX, worldZ ->
+                        val newPoint = Point(worldX.toDouble(), worldZ.toDouble())
+                        val prev = anchorPoints.lastOrNull()
+                        val tooClose = prev != null && run {
+                            val dx = newPoint.x - prev.x
+                            val dy = newPoint.y - prev.y
+                            sqrt(dx * dx + dy * dy) < 0.3
+                        }
+                        if (tooClose) {
+                            anchor.detach()
+                            triggerVibration(ctx, doubleClick = true)
+                        } else {
+                            if (prev != null) {
+                                val dx = newPoint.x - prev.x
+                                val dy = newPoint.y - prev.y
+                                segmentLengths = segmentLengths + sqrt(dx * dx + dy * dy)
+                            }
+                            anchorPoints = anchorPoints + newPoint
+                            triggerVibration(ctx)
                         }
                     }
-                },
-                modifier = Modifier.fillMaxSize()
-            )
+                    // 不在 factory 里调用 onResume，由 cameraReady 控制
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
 
-            // ── 2. 准星 ────────────────────────────────────────────────────────────────
-            Canvas(modifier = Modifier.align(Alignment.Center).size(56.dp)) {
+        // ── 2. 准星（始终显示，随 uiReady 淡入）──────────────────────────────────────
+        AnimatedVisibility(
+            visible = uiReady,
+            enter = fadeIn(tween(400)),
+            modifier = Modifier.align(Alignment.Center)
+        ) {
+            Canvas(modifier = Modifier.size(56.dp)) {
                 val s = size.minDimension
                 val arm = s * 0.30f
                 val sw = 2.5f
@@ -177,127 +179,193 @@ fun ArScannerScreen(
                     Offset(s, 0f)  to listOf(Offset(s - arm, 0f), Offset(s, arm)),
                     Offset(0f, s)  to listOf(Offset(arm, s), Offset(0f, s - arm)),
                     Offset(s, s)   to listOf(Offset(s - arm, s), Offset(s, s - arm))
-                ).forEach { (pivot, ends) -> ends.forEach { end -> drawLine(color, pivot, end, sw) } }
+                ).forEach { (pivot, ends) ->
+                    ends.forEach { end -> drawLine(color, pivot, end, sw) }
+                }
                 drawCircle(color, radius = 2.dp.toPx(), center = Offset(s / 2f, s / 2f))
             }
+        }
 
-            // ── 3. 右上角 Mini-Map（显示当前检测到的最大平面多边形）────────────────────
-            AnimatedVisibility(
-                visible = planeSnapshot.isNotEmpty(),
-                enter = fadeIn(tween(300)),
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 52.dp, end = 16.dp)
+        // ── 3. 右上角 MiniMap ──────────────────────────────────────────────────────────
+        AnimatedVisibility(
+            visible = anchorPoints.isNotEmpty(),
+            enter = fadeIn(tween(300)),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 52.dp, end = 16.dp)
+        ) {
+            Card(
+                modifier = Modifier.size(120.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.55f)),
+                shape = RoundedCornerShape(12.dp)
             ) {
-                Card(
-                    modifier = Modifier.size(120.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.Black.copy(alpha = 0.55f)),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    MiniMapCanvas(
-                        vertices = planeSnapshot,
-                        cursor = null,
-                        pointCloud = emptyList(),
-                        modifier = Modifier.fillMaxSize().padding(10.dp)
-                    )
-                }
+                MiniMapCanvas(
+                    vertices = anchorPoints,
+                    cursor = null,
+                    pointCloud = emptyList(),
+                    modifier = Modifier.fillMaxSize().padding(10.dp)
+                )
             }
+        }
 
-            // ── 4. 左上角：取消按钮 ────────────────────────────────────────────────────
-            IconButton(
-                onClick = {
-                    coroutineScope.launch {
-                        sessionHolder.pause()
-                        delay(200)
-                        onCancel()
-                    }
-                },
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(top = 48.dp, start = 12.dp)
-                    .background(Color.Black.copy(alpha = 0.45f), CircleShape)
-            ) {
-                Icon(Icons.Default.Close, contentDescription = "取消", tint = Color.White)
-            }
-
-            // ── 5. 顶部状态提示条 ──────────────────────────────────────────────────────
-            val statusText = when {
-                !isTracking                              -> "请缓慢移动设备，扫描地面"
-                planeSnapshot.isEmpty()                  -> "未检测到地面平面，请对准地板"
-                currentAreaM2 < 2.0                      -> "继续探索房间… 已测 %.1fm²".format(currentAreaM2)
-                isConverged                              -> "✓ 扫描收敛！面积 %.1fm²，可完成".format(currentAreaM2)
-                else                                     -> "继续走动以完整覆盖… %.1fm²".format(currentAreaM2)
-            }
-            val statusColor = if (isConverged) Color(0xFF00E5FF) else Color.White.copy(alpha = 0.9f)
-
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 52.dp)
-                    .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(20.dp))
-                    .padding(horizontal = 16.dp, vertical = 6.dp)
-            ) {
-                Text(statusText, style = MaterialTheme.typography.labelMedium, color = statusColor)
-            }
-
-            // ── 6. 底部操作栏 ──────────────────────────────────────────────────────────
+        // ── 4. 顶部栏（取消 + 状态提示）从上方滑入 ────────────────────────────────────
+        AnimatedVisibility(
+            visible = uiReady,
+            enter = slideInVertically(tween(400)) { -it } + fadeIn(tween(400)),
+            exit  = slideOutVertically(tween(200)) { -it } + fadeOut(tween(200)),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+        ) {
             Row(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 52.dp)
-                    .fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                    .fillMaxWidth()
+                    .padding(top = 48.dp, start = 8.dp, end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // 取消
                 IconButton(
                     onClick = {
                         coroutineScope.launch {
-                            sessionHolder.pause()
+                            // 先触发 UI 退出动画，再 pause session，避免 UI 挂在黑屏上
+                            uiReady = false
                             delay(200)
+                            sessionHolder.pause()
                             onCancel()
                         }
                     },
-                    modifier = Modifier
-                        .size(52.dp)
-                        .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                    modifier = Modifier.background(Color.Black.copy(alpha = 0.45f), CircleShape)
                 ) {
-                    Icon(
-                        Icons.Default.Close,
-                        contentDescription = "取消",
-                        tint = Color.White,
-                        modifier = Modifier.size(22.dp)
-                    )
+                    Icon(Icons.Default.Close, contentDescription = "取消", tint = Color.White)
                 }
 
-                Spacer(modifier = Modifier.size(72.dp))
+                Spacer(Modifier.width(8.dp))
 
-                // 完成（面积 > 2m² 时解锁，不强制等收敛信号）
-                val canFinish = currentAreaM2 > 2.0 && planeSnapshot.size >= 3
-                IconButton(
+                // 状态提示
+                val statusText = when {
+                    !isTracking            -> "请缓慢移动设备，扫描地面"
+                    anchorPoints.isEmpty() -> "将准星对准墙角，按下放置"
+                    anchorPoints.size == 1 -> "继续放置锚点（至少 3 个）"
+                    anchorPoints.size == 2 -> "再放置 1 个即可完成"
+                    else                   -> "已放置 ${anchorPoints.size} 个点，可继续或完成"
+                }
+                Box(
+                    modifier = Modifier
+                        .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(20.dp))
+                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        statusText,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White.copy(alpha = 0.9f)
+                    )
+                }
+            }
+        }
+
+        // ── 5. 边长标签（左侧浮动）────────────────────────────────────────────────────
+        if (segmentLengths.isNotEmpty()) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 12.dp)
+                    .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                val display  = segmentLengths.takeLast(3)
+                val startIdx = segmentLengths.size - display.size
+                display.forEachIndexed { i, len ->
+                    Text(
+                        text = "段${startIdx + i + 1}：${"%.0f".format(len * 100)} cm",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF00E5FF)
+                    )
+                }
+                if (canFinish) {
+                    val a = anchorPoints.first(); val b = anchorPoints.last()
+                    val closingLen = sqrt((a.x - b.x).pow(2) + (a.y - b.y).pow(2))
+                    Text(
+                        text = "闭合：${"%.0f".format(closingLen * 100)} cm",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF69F0AE)
+                    )
+                }
+            }
+        }
+
+        // ── 6. 底部三按钮：从下方滑入 ─────────────────────────────────────────────────
+        // 布局：[撤销 48dp] ──── [放置 72dp] ──── [完成 48dp]
+        AnimatedVisibility(
+            visible = uiReady,
+            enter = slideInVertically(tween(400)) { it } + fadeIn(tween(400)),
+            exit  = slideOutVertically(tween(200)) { it } + fadeOut(tween(200)),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(bottom = 48.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // 撤销（小）
+                FilledIconButton(
                     onClick = {
-                        val boundary = alignToScreen(planeSnapshot)
+                        if (canUndo) {
+                            sessionHolder.undoLastAnchor()
+                            anchorPoints = anchorPoints.dropLast(1)
+                            if (segmentLengths.isNotEmpty())
+                                segmentLengths = segmentLengths.dropLast(1)
+                        }
+                    },
+                    enabled = canUndo,
+                    modifier = Modifier.size(48.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = Color.White.copy(alpha = 0.18f),
+                        contentColor = Color.White,
+                        disabledContainerColor = Color.White.copy(alpha = 0.06f),
+                        disabledContentColor = Color.White.copy(alpha = 0.25f)
+                    )
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "撤销", modifier = Modifier.size(20.dp))
+                }
+
+                // 放置（大）
+                FilledIconButton(
+                    onClick = { glView?.hitTestCenter() },
+                    modifier = Modifier.size(72.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    )
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "放置锚点", modifier = Modifier.size(32.dp))
+                }
+
+                // 完成（小）
+                FilledIconButton(
+                    onClick = {
+                        val boundary = alignToScreen(rdpSimplify(anchorPoints, 0.1))
                         val gridPts  = generateVirtualGrid(boundary, gridStepM)
                         coroutineScope.launch {
-                            sessionHolder.pause()
+                            uiReady = false
                             delay(200)
+                            sessionHolder.pause()
                             onComplete(ScanResult(boundary, gridPts))
                         }
                     },
                     enabled = canFinish,
-                    modifier = Modifier
-                        .size(52.dp)
-                        .background(
-                            if (canFinish) Color(0xFF00897B) else Color.White.copy(alpha = 0.15f),
-                            CircleShape
-                        )
-                ) {
-                    Icon(
-                        Icons.Default.Check,
-                        contentDescription = "完成扫描",
-                        tint = if (canFinish) Color.White else Color.White.copy(alpha = 0.35f),
-                        modifier = Modifier.size(22.dp)
+                    modifier = Modifier.size(48.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = Color(0xFF00897B),
+                        contentColor = Color.White,
+                        disabledContainerColor = Color.White.copy(alpha = 0.06f),
+                        disabledContentColor = Color.White.copy(alpha = 0.25f)
                     )
+                ) {
+                    Icon(Icons.Default.Check, contentDescription = "完成", modifier = Modifier.size(20.dp))
                 }
             }
         }
@@ -308,13 +376,6 @@ fun ArScannerScreen(
 // 阶段二：虚拟采集网格生成（射线法过滤）
 // =====================================================================================
 
-/**
- * 在多边形内部按 [stepM] 步长生成均匀网格点。
- *
- * 1. 计算多边形 BoundingBox
- * 2. 在 BoundingBox 内生成矩阵点
- * 3. Ray-Casting 过滤掉多边形外部点
- */
 fun generateVirtualGrid(polygon: List<Point>, stepM: Double): List<Point> {
     if (polygon.size < 3) return emptyList()
 
@@ -324,7 +385,7 @@ fun generateVirtualGrid(polygon: List<Point>, stepM: Double): List<Point> {
     val maxY = polygon.maxOf { it.y }
 
     val result = mutableListOf<Point>()
-    var x = minX + stepM / 2.0   // 从网格中心开始，避免点落在边界线上
+    var x = minX + stepM / 2.0
     while (x <= maxX) {
         var y = minY + stepM / 2.0
         while (y <= maxY) {
@@ -337,11 +398,6 @@ fun generateVirtualGrid(polygon: List<Point>, stepM: Double): List<Point> {
     return result
 }
 
-/**
- * Ray-Casting 点在多边形内判断。
- * 从点向 +X 方向发射射线，统计与多边形边的交叉次数。
- * 奇数 = 内部，偶数 = 外部。
- */
 private fun isPointInPolygon(point: Point, polygon: List<Point>): Boolean {
     var inside = false
     val n = polygon.size
@@ -361,7 +417,6 @@ private fun isPointInPolygon(point: Point, polygon: List<Point>): Boolean {
 // 工具函数
 // =====================================================================================
 
-/** Shoelace 公式计算多边形面积（m²） */
 fun shoelaceArea(pts: List<Point>): Double {
     if (pts.size < 3) return 0.0
     var area = 0.0
@@ -374,8 +429,40 @@ fun shoelaceArea(pts: List<Point>): Double {
     return abs(area) / 2.0
 }
 
-/** 震动反馈：200ms 短震 */
-private fun triggerVibration(context: Context) {
+/**
+ * Ramer-Douglas-Peucker 多边形简化。
+ * 去掉共线或近共线的冗余点，保留形状关键转角。
+ * [epsilon] 单位米，推荐 0.1m（10cm）。
+ */
+fun rdpSimplify(points: List<Point>, epsilon: Double): List<Point> {
+    if (points.size <= 2) return points
+    // 找离首尾连线最远的点
+    val start = points.first(); val end = points.last()
+    var maxDist = 0.0; var maxIdx = 0
+    for (i in 1 until points.size - 1) {
+        val d = perpendicularDistance(points[i], start, end)
+        if (d > maxDist) { maxDist = d; maxIdx = i }
+    }
+    return if (maxDist > epsilon) {
+        // 递归处理两段
+        val left  = rdpSimplify(points.subList(0, maxIdx + 1), epsilon)
+        val right = rdpSimplify(points.subList(maxIdx, points.size), epsilon)
+        left.dropLast(1) + right
+    } else {
+        listOf(start, end)
+    }
+}
+
+/** 点 p 到线段 (a, b) 的垂直距离 */
+private fun perpendicularDistance(p: Point, a: Point, b: Point): Double {
+    val dx = b.x - a.x; val dy = b.y - a.y
+    if (dx == 0.0 && dy == 0.0) {
+        return sqrt((p.x - a.x).pow(2) + (p.y - a.y).pow(2))
+    }
+    return abs(dy * p.x - dx * p.y + b.x * a.y - b.y * a.x) / sqrt(dx * dx + dy * dy)
+}
+
+private fun triggerVibration(context: Context, doubleClick: Boolean = false) {
     try {
         val vib = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val mgr = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE)
@@ -386,16 +473,23 @@ private fun triggerVibration(context: Context) {
             context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            vib?.vibrate(VibrationEffect.createOneShot(200, VibrationEffect.DEFAULT_AMPLITUDE))
+            val effect = if (doubleClick) {
+                // 两短震：提示"太近了，已拒绝"
+                VibrationEffect.createWaveform(longArrayOf(0, 50, 60, 50), -1)
+            } else {
+                VibrationEffect.createOneShot(60, VibrationEffect.DEFAULT_AMPLITUDE)
+            }
+            vib?.vibrate(effect)
         } else {
             @Suppress("DEPRECATION")
-            vib?.vibrate(200)
+            if (doubleClick) vib?.vibrate(longArrayOf(0, 50, 60, 50), -1)
+            else vib?.vibrate(60)
         }
     } catch (_: Exception) {}
 }
 
 // =====================================================================================
-// ArSessionHolder — 持有 ARCore Session，并在 GL 线程写入最新平面多边形
+// ArSessionHolder — 持有 ARCore Session，维护锚点列表
 // =====================================================================================
 class ArSessionHolder {
     @Volatile var session: Session? = null
@@ -403,8 +497,9 @@ class ArSessionHolder {
     @Volatile var isPaused = false
         private set
 
-    // GL 线程写入，UI 线程（500ms）读取——使用 @Volatile 保证可见性
-    @Volatile var latestFloorPolygon: List<Point> = emptyList()
+    // GL 线程持有的锚点列表（世界坐标）
+    // 主线程通过 onTapResult 追加，undoLastAnchor 删除
+    val anchors = mutableListOf<Anchor>()
 
     fun create(activity: Activity) {
         try {
@@ -413,22 +508,20 @@ class ArSessionHolder {
 
             val s = Session(activity)
 
-            // ── S25+ 防崩：弹性相机配置，优先 30FPS，无法匹配则用默认配置 ──────────────
             try {
                 val filter = CameraConfigFilter(s).apply {
                     targetFps = java.util.EnumSet.of(CameraConfig.TargetFps.TARGET_FPS_30)
                 }
                 val configs = s.getSupportedCameraConfigs(filter)
                 if (configs.isNotEmpty()) s.cameraConfig = configs[0]
-                // 若 configs 为空（不支持 30FPS 过滤），直接使用默认配置，不崩溃
             } catch (_: Exception) {}
 
             val config = Config(s).apply {
-                planeFindingMode  = Config.PlaneFindingMode.HORIZONTAL
-                updateMode        = Config.UpdateMode.LATEST_CAMERA_IMAGE
-                depthMode         = Config.DepthMode.AUTOMATIC   // 软件深度（S25+ 无 ToF）
-                focusMode         = Config.FocusMode.AUTO         // 自动对焦，防近景追踪断裂
-                lightEstimationMode = Config.LightEstimationMode.DISABLED // 节省算力
+                planeFindingMode    = Config.PlaneFindingMode.HORIZONTAL
+                updateMode          = Config.UpdateMode.LATEST_CAMERA_IMAGE
+                depthMode           = Config.DepthMode.AUTOMATIC
+                focusMode           = Config.FocusMode.AUTO
+                lightEstimationMode = Config.LightEstimationMode.DISABLED
             }
             s.configure(config)
             session = s
@@ -444,17 +537,31 @@ class ArSessionHolder {
     }
 
     fun close() {
-        try { session?.close(); session = null } catch (_: Exception) {}
+        try {
+            anchors.forEach { it.detach() }
+            anchors.clear()
+            session?.close(); session = null
+        } catch (_: Exception) {}
+    }
+
+    fun undoLastAnchor() {
+        synchronized(anchors) {
+            if (anchors.isNotEmpty()) {
+                anchors.removeAt(anchors.lastIndex).detach()
+            }
+        }
     }
 }
 
 // =====================================================================================
-// ArGLSurfaceView
+// ArGLSurfaceView — 准星中心 hit test（由按钮触发，不再依赖触摸）
 // =====================================================================================
 class ArGLSurfaceView(context: Context, private val holder: ArSessionHolder) :
     GLSurfaceView(context) {
 
     var onTrackingChanged: ((Boolean) -> Unit)? = null
+    // 回调：成功放置锚点时，返回 Anchor 和世界 (X, Z)
+    var onTapResult: ((Anchor, Float, Float) -> Unit)? = null
 
     private val renderer = ArRenderer(
         sessionHolder = holder,
@@ -469,12 +576,37 @@ class ArGLSurfaceView(context: Context, private val holder: ArSessionHolder) :
         renderMode = RENDERMODE_CONTINUOUSLY
     }
 
+    /** 对屏幕正中心执行 hit test，由放置按钮调用 */
+    fun hitTestCenter() {
+        if (holder.isPaused) return
+        queueEvent {
+            try {
+                val frame = renderer.lastFrame ?: return@queueEvent
+                val cx = width / 2f
+                val cy = height / 2f
+                val hits = frame.hitTest(cx, cy)
+                val hit = hits.firstOrNull { hr ->
+                    val trackable = hr.trackable
+                    trackable is Plane &&
+                    trackable.isPoseInPolygon(hr.hitPose) &&
+                    trackable.trackingState == TrackingState.TRACKING &&
+                    hr.distance <= 10f
+                } ?: return@queueEvent
+
+                val anchor = hit.createAnchor()
+                synchronized(holder.anchors) { holder.anchors.add(anchor) }
+                val pose = anchor.pose
+                post { onTapResult?.invoke(anchor, pose.tx(), pose.tz()) }
+            } catch (_: Exception) {}
+        }
+    }
+
     override fun onResume() { super.onResume(); holder.resume() }
     override fun onPause()  { super.onPause();  holder.pause()  }
 }
 
 // =====================================================================================
-// ArRenderer — GL 渲染 + Plane 多边形提取
+// ArRenderer — GL 渲染：相机背景 + 锚点球体 + 连线
 // =====================================================================================
 class ArRenderer(
     private val sessionHolder: ArSessionHolder,
@@ -484,15 +616,18 @@ class ArRenderer(
 
     private val rotationHelper = DisplayRotationHelper(context)
     private var backgroundRenderer: CameraBackgroundRenderer? = null
-    private var planeRenderer: PlaneRenderer? = null
+    private var anchorRenderer: AnchorRenderer? = null
     private var viewportWidth = 0
     private var viewportHeight = 0
+
+    // ArGLSurfaceView 在 GL 线程读取此 frame 执行 hit test
+    @Volatile var lastFrame: Frame? = null
 
     override fun onSurfaceCreated(gl: GL10, config: EGLConfig) {
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         try {
             backgroundRenderer = CameraBackgroundRenderer()
-            planeRenderer      = PlaneRenderer()
+            anchorRenderer     = AnchorRenderer()
         } catch (_: Exception) {}
     }
 
@@ -511,6 +646,7 @@ class ArRenderer(
             rotationHelper.updateSessionIfNeeded(session)
             session.setCameraTextureName(backgroundRenderer?.textureId ?: return)
             val frame  = session.update()
+            lastFrame  = frame
             backgroundRenderer?.draw(frame)
 
             val camera     = frame.camera
@@ -522,47 +658,196 @@ class ArRenderer(
                 camera.getProjectionMatrix(projMatrix, 0, 0.1f, 100f)
                 camera.getViewMatrix(viewMatrix, 0)
 
-                val planes = session.getAllTrackables(Plane::class.java)
-                    .filter { it.trackingState == TrackingState.TRACKING }
-
-                // 赛博朋克平面网格渲染（阶段一视觉核心，必须开启）
-                planeRenderer?.drawPlanes(planes, viewMatrix, projMatrix)
-
-                // ── 提取面积最大的水平向上平面，将 polygon 转为世界坐标 ────────────────
-                val floorPlane = planes
-                    .filter { it.type == Plane.Type.HORIZONTAL_UPWARD_FACING }
-                    .maxByOrNull { it.extentX * it.extentZ }
-
-                if (floorPlane != null) {
-                    sessionHolder.latestFloorPolygon = extractWorldPolygon(floorPlane)
+                val snapAnchors = synchronized(sessionHolder.anchors) {
+                    sessionHolder.anchors.toList()
                 }
+                anchorRenderer?.draw(snapAnchors, viewMatrix, projMatrix)
             }
 
             onFrameUpdate(isTracking)
         } catch (_: SessionPausedException) {
         } catch (_: Exception) {}
     }
+}
 
-    /**
-     * 将 ARCore Plane 的局部 polygon 顶点转换为世界坐标系中的 (X, Z) 坐标列表。
-     *
-     * plane.polygon 是以平面中心 Pose 为原点的局部 FloatBuffer（x, z 交替存储，无 Y）。
-     * 通过 centerPose.transformPoint([localX, 0, localZ]) 得到世界坐标。
-     */
-    private fun extractWorldPolygon(plane: Plane): List<Point> {
-        val buf = plane.polygon   // 局部坐标，格式：x0,z0, x1,z1, ...
-        buf.rewind()
-        val result = mutableListOf<Point>()
-        val localPt = FloatArray(3)
-        val worldPt = FloatArray(3)
-        while (buf.remaining() >= 2) {
-            localPt[0] = buf.get()  // localX
-            localPt[1] = 0f
-            localPt[2] = buf.get()  // localZ
-            plane.centerPose.transformPoint(localPt, 0, worldPt, 0)
-            result.add(Point(worldPt[0].toDouble(), worldPt[2].toDouble()))
+// =====================================================================================
+// AnchorRenderer — 渲染锚点球体（绿色圆点）+ 相邻连线（白色）
+// =====================================================================================
+class AnchorRenderer {
+
+    private var program = 0
+    private var aPos    = 0
+    private var uMVP    = 0
+    private var uColor  = 0
+
+    private val vpMatrix  = FloatArray(16)
+    private val mvp       = FloatArray(16)
+    private val model     = FloatArray(16)
+
+    // 球体顶点（近似：经纬分段生成 GL_LINES）
+    private val sphereLines: FloatArray
+    private val sphereNio: java.nio.FloatBuffer
+
+    // 线段缓冲（每帧根据锚点数量动态构建）
+    private var lineArray = FloatArray(0)
+    private var lineNio: java.nio.FloatBuffer? = null
+    private var lineCap = 0
+
+    init {
+        program = buildProgram(VS, FS)
+        aPos   = GLES20.glGetAttribLocation(program,  "a_Position")
+        uMVP   = GLES20.glGetUniformLocation(program, "u_MVP")
+        uColor = GLES20.glGetUniformLocation(program, "u_Color")
+
+        // 生成球体线框（半径 0.04m，经纬各 12 段）
+        sphereLines = buildSphereLines(0.04f, 12)
+        sphereNio = java.nio.ByteBuffer
+            .allocateDirect(sphereLines.size * 4)
+            .order(java.nio.ByteOrder.nativeOrder())
+            .asFloatBuffer()
+            .apply { put(sphereLines); position(0) }
+    }
+
+    fun draw(anchors: List<Anchor>, viewMatrix: FloatArray, projMatrix: FloatArray) {
+        if (anchors.isEmpty()) return
+
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glDepthMask(false)
+        GLES20.glUseProgram(program)
+
+        Matrix.multiplyMM(vpMatrix, 0, projMatrix, 0, viewMatrix, 0)
+
+        // ── 渲染每个锚点球体（绿色）─────────────────────────────────────────────────
+        GLES20.glUniform4f(uColor, 0.33f, 0.87f, 0f, 1f)  // 对应原项目绿色
+        GLES20.glEnableVertexAttribArray(aPos)
+        GLES20.glLineWidth(1.5f)
+
+        for (anchor in anchors) {
+            if (anchor.trackingState != TrackingState.TRACKING) continue
+            anchor.pose.toMatrix(model, 0)
+            Matrix.multiplyMM(mvp, 0, vpMatrix, 0, model, 0)
+            GLES20.glUniformMatrix4fv(uMVP, 1, false, mvp, 0)
+            sphereNio.position(0)
+            GLES20.glVertexAttribPointer(aPos, 3, GLES20.GL_FLOAT, false, 0, sphereNio)
+            GLES20.glDrawArrays(GLES20.GL_LINES, 0, sphereLines.size / 3)
         }
-        return result
+
+        // ── 渲染连线（白色），使用单位 model 矩阵（世界坐标直接画）─────────────────
+        if (anchors.size >= 2) {
+            val validAnchors = anchors.filter { it.trackingState == TrackingState.TRACKING }
+            if (validAnchors.size >= 2) {
+                // 构建线段顶点：相邻对 + 闭合线（如果 ≥ 3 个点）
+                val segCount = validAnchors.size - 1 +
+                        if (validAnchors.size >= 3) 1 else 0
+                val needed = segCount * 6  // 每段 2 点 × 3 float
+                if (needed > lineCap) {
+                    lineArray = FloatArray(needed)
+                    lineNio = java.nio.ByteBuffer.allocateDirect(needed * 4)
+                        .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
+                    lineCap = needed
+                }
+
+                var li = 0
+                for (i in 0 until validAnchors.size - 1) {
+                    val pA = validAnchors[i].pose
+                    val pB = validAnchors[i + 1].pose
+                    lineArray[li++] = pA.tx(); lineArray[li++] = pA.ty(); lineArray[li++] = pA.tz()
+                    lineArray[li++] = pB.tx(); lineArray[li++] = pB.ty(); lineArray[li++] = pB.tz()
+                }
+                // 闭合线：最后一点 → 第一点（预览用，半透明）
+                if (validAnchors.size >= 3) {
+                    val pFirst = validAnchors.first().pose
+                    val pLast  = validAnchors.last().pose
+                    lineArray[li++] = pLast.tx();  lineArray[li++] = pLast.ty();  lineArray[li++] = pLast.tz()
+                    lineArray[li++] = pFirst.tx(); lineArray[li++] = pFirst.ty(); lineArray[li++] = pFirst.tz()
+                }
+
+                lineNio!!.position(0); lineNio!!.put(lineArray, 0, li); lineNio!!.position(0)
+
+                // 用单位矩阵作为 model（顶点已是世界坐标）
+                Matrix.setIdentityM(model, 0)
+                Matrix.multiplyMM(mvp, 0, vpMatrix, 0, model, 0)
+                GLES20.glUniformMatrix4fv(uMVP, 1, false, mvp, 0)
+
+                // 实线（连线段，白色）
+                GLES20.glUniform4f(uColor, 1f, 1f, 1f, 0.9f)
+                lineNio!!.position(0)
+                GLES20.glVertexAttribPointer(aPos, 3, GLES20.GL_FLOAT, false, 0, lineNio)
+                GLES20.glLineWidth(2f)
+                val solidCount = (validAnchors.size - 1) * 2
+                GLES20.glDrawArrays(GLES20.GL_LINES, 0, solidCount)
+
+                // 闭合线（虚线效果用半透明实线代替，浅绿色）
+                if (validAnchors.size >= 3) {
+                    GLES20.glUniform4f(uColor, 0.41f, 0.94f, 0.42f, 0.50f)
+                    lineNio!!.position(solidCount * 3)  // 跳到闭合段
+                    GLES20.glVertexAttribPointer(aPos, 3, GLES20.GL_FLOAT, false, 0, lineNio)
+                    GLES20.glLineWidth(1.5f)
+                    GLES20.glDrawArrays(GLES20.GL_LINES, 0, 2)
+                }
+            }
+        }
+
+        GLES20.glDisableVertexAttribArray(aPos)
+        GLES20.glDepthMask(true)
+        GLES20.glDisable(GLES20.GL_BLEND)
+    }
+
+    /** 生成球体线框顶点（经线 + 纬线，GL_LINES 格式） */
+    private fun buildSphereLines(r: Float, segments: Int): FloatArray {
+        val lines = mutableListOf<Float>()
+        val step = (2 * PI / segments).toFloat()
+
+        // XZ 平面圆（赤道）
+        for (i in 0 until segments) {
+            val a0 = i * step; val a1 = (i + 1) * step
+            lines += floatArrayOf(
+                r * cos(a0), 0f, r * sin(a0),
+                r * cos(a1), 0f, r * sin(a1)
+            ).toList()
+        }
+        // XY 平面圆
+        for (i in 0 until segments) {
+            val a0 = i * step; val a1 = (i + 1) * step
+            lines += floatArrayOf(
+                r * cos(a0), r * sin(a0), 0f,
+                r * cos(a1), r * sin(a1), 0f
+            ).toList()
+        }
+        // YZ 平面圆
+        for (i in 0 until segments) {
+            val a0 = i * step; val a1 = (i + 1) * step
+            lines += floatArrayOf(
+                0f, r * sin(a0), r * cos(a0),
+                0f, r * sin(a1), r * cos(a1)
+            ).toList()
+        }
+        return lines.toFloatArray()
+    }
+
+    private fun buildProgram(vs: String, fs: String): Int {
+        val v = GLES20.glCreateShader(GLES20.GL_VERTEX_SHADER).also {
+            GLES20.glShaderSource(it, vs); GLES20.glCompileShader(it) }
+        val f = GLES20.glCreateShader(GLES20.GL_FRAGMENT_SHADER).also {
+            GLES20.glShaderSource(it, fs); GLES20.glCompileShader(it) }
+        return GLES20.glCreateProgram().also {
+            GLES20.glAttachShader(it, v); GLES20.glAttachShader(it, f)
+            GLES20.glLinkProgram(it)
+        }
+    }
+
+    companion object {
+        private const val VS = """
+            uniform mat4  u_MVP;
+            attribute vec3 a_Position;
+            void main() { gl_Position = u_MVP * vec4(a_Position, 1.0); }
+        """
+        private const val FS = """
+            precision mediump float;
+            uniform vec4 u_Color;
+            void main() { gl_FragColor = u_Color; }
+        """
     }
 }
 
@@ -586,132 +871,6 @@ class DisplayRotationHelper(private val context: Context) {
             session.setDisplayGeometry(rotation, viewportWidth, viewportHeight)
             viewportChanged = false
         }
-    }
-}
-
-// =====================================================================================
-// PlaneRenderer — 赛博朋克斑点网格平面渲染（阶段一视觉核心，禁止关闭）
-// =====================================================================================
-class PlaneRenderer {
-
-    private var program           = 0
-    private var positionAttrib    = 0
-    private var mvpMatrixUniform  = 0
-    private var colorUniform      = 0
-    private var dotScaleUniform   = 0
-
-    private val PLANE_COLOR = floatArrayOf(0.1f, 0.85f, 0.7f, 0.22f)   // 半透明青绿
-    private val DOT_COLOR   = floatArrayOf(0.1f, 0.95f, 0.75f, 0.55f)  // 亮点
-
-    init {
-        val vs = compileShader(GLES20.GL_VERTEX_SHADER,   VERTEX_SHADER)
-        val fs = compileShader(GLES20.GL_FRAGMENT_SHADER, FRAGMENT_SHADER)
-        program = GLES20.glCreateProgram().also {
-            GLES20.glAttachShader(it, vs)
-            GLES20.glAttachShader(it, fs)
-            GLES20.glLinkProgram(it)
-        }
-        positionAttrib   = GLES20.glGetAttribLocation(program,  "a_Position")
-        mvpMatrixUniform = GLES20.glGetUniformLocation(program, "u_MVP")
-        colorUniform     = GLES20.glGetUniformLocation(program, "u_Color")
-        dotScaleUniform  = GLES20.glGetUniformLocation(program, "u_DotScale")
-    }
-
-    fun drawPlanes(planes: Collection<Plane>, viewMatrix: FloatArray, projMatrix: FloatArray) {
-        GLES20.glEnable(GLES20.GL_BLEND)
-        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
-        GLES20.glDepthMask(false)
-        GLES20.glUseProgram(program)
-
-        val vpMatrix = FloatArray(16)
-        Matrix.multiplyMM(vpMatrix, 0, projMatrix, 0, viewMatrix, 0)
-
-        for (plane in planes) {
-            val modelMatrix = FloatArray(16)
-            plane.centerPose.toMatrix(modelMatrix, 0)
-            val mvpMatrix = FloatArray(16)
-            Matrix.multiplyMM(mvpMatrix, 0, vpMatrix, 0, modelMatrix, 0)
-
-            val extentX  = plane.extentX
-            val extentZ  = plane.extentZ
-            val vertices = buildPlaneVertices(extentX, extentZ)
-            val vBuf = java.nio.ByteBuffer.allocateDirect(vertices.size * 4)
-                .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
-                .apply { put(vertices); position(0) }
-
-            GLES20.glEnableVertexAttribArray(positionAttrib)
-            GLES20.glVertexAttribPointer(positionAttrib, 3, GLES20.GL_FLOAT, false, 0, vBuf)
-            GLES20.glUniformMatrix4fv(mvpMatrixUniform, 1, false, mvpMatrix, 0)
-
-            GLES20.glUniform4fv(colorUniform, 1, PLANE_COLOR, 0)
-            GLES20.glUniform1f(dotScaleUniform, 0f)
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, vertices.size / 3)
-
-            val dots = buildDotVertices(extentX, extentZ, spacing = 0.12f)
-            if (dots.isNotEmpty()) {
-                val dBuf = java.nio.ByteBuffer.allocateDirect(dots.size * 4)
-                    .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
-                    .apply { put(dots); position(0) }
-                GLES20.glVertexAttribPointer(positionAttrib, 3, GLES20.GL_FLOAT, false, 0, dBuf)
-                GLES20.glUniform4fv(colorUniform, 1, DOT_COLOR, 0)
-                GLES20.glUniform1f(dotScaleUniform, 1f)
-                GLES20.glDrawArrays(GLES20.GL_POINTS, 0, dots.size / 3)
-            }
-            GLES20.glDisableVertexAttribArray(positionAttrib)
-        }
-
-        GLES20.glDepthMask(true)
-        GLES20.glDisable(GLES20.GL_BLEND)
-    }
-
-    private fun buildPlaneVertices(extentX: Float, extentZ: Float): FloatArray {
-        val segments = 32
-        val rx = extentX / 2f; val rz = extentZ / 2f
-        val verts = mutableListOf<Float>()
-        verts += listOf(0f, 0f, 0f)
-        for (i in 0..segments) {
-            val angle = (i.toFloat() / segments) * 2f * Math.PI.toFloat()
-            verts += listOf(rx * cos(angle), 0f, rz * sin(angle))
-        }
-        return verts.toFloatArray()
-    }
-
-    private fun buildDotVertices(extentX: Float, extentZ: Float, spacing: Float): FloatArray {
-        val rx = extentX / 2f; val rz = extentZ / 2f
-        val dots = mutableListOf<Float>()
-        var x = -rx
-        while (x <= rx) {
-            var z = -rz
-            while (z <= rz) {
-                if ((x / rx) * (x / rx) + (z / rz) * (z / rz) <= 1f) dots += listOf(x, 0f, z)
-                z += spacing
-            }
-            x += spacing
-        }
-        return dots.toFloatArray()
-    }
-
-    private fun compileShader(type: Int, src: String): Int =
-        GLES20.glCreateShader(type).also {
-            GLES20.glShaderSource(it, src)
-            GLES20.glCompileShader(it)
-        }
-
-    companion object {
-        private const val VERTEX_SHADER = """
-            uniform mat4 u_MVP;
-            attribute vec4 a_Position;
-            uniform float u_DotScale;
-            void main() {
-                gl_Position = u_MVP * a_Position;
-                gl_PointSize = 5.0 * u_DotScale + 1.0;
-            }
-        """
-        private const val FRAGMENT_SHADER = """
-            precision mediump float;
-            uniform vec4 u_Color;
-            void main() { gl_FragColor = u_Color; }
-        """
     }
 }
 

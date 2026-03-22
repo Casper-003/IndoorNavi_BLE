@@ -19,6 +19,7 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
@@ -32,6 +33,9 @@ import kotlinx.coroutines.launch
 import android.graphics.Color as AndroidColor
 import android.Manifest
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 
@@ -91,6 +95,7 @@ fun MainAppRouter() {
                 surface = bg,
                 onSurface = Color.White.copy(alpha = 0.87f),
                 surfaceVariant = seed.copy(alpha = 0.1f).compositeOver(surf),
+                surfaceContainer = Color(0xFF1E1E1E),
                 onSurfaceVariant = Color.White.copy(alpha = 0.8f),
                 outline = Color.White.copy(alpha = 0.2f),
                 outlineVariant = Color.White.copy(alpha = 0.12f)
@@ -148,47 +153,26 @@ fun MainAppScreen(sharedViewModel: SharedViewModel) {
         }
     }
 
-    Scaffold(
-        bottomBar = {
-            // 🌟 核心修复：根据全局状态控制底部导航栏显隐，并加入丝滑的下潜动画
-            AnimatedVisibility(
-                visible = sharedViewModel.isBottomBarVisible,
-                enter = slideInVertically(initialOffsetY = { it }), // 从底部滑入
-                exit = slideOutVertically(targetOffsetY = { it })   // 向底部滑出隐藏
-            ) {
-                NavigationBar(
-                    modifier = Modifier.height(72.dp),
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 0.dp
-                ) {
-                    val navIcons = listOf(Icons.Rounded.CellTower, Icons.Rounded.Map, Icons.Rounded.Explore, Icons.Rounded.Settings)
-                    val navLabels = listOf("基站", "地图", "定位", "设置")
-                    val selectedTabIndex = pagerState.targetPage
+    // pendingScanResult 在顶层处理，避免 FingerprintManagerScreen 内部状态与顶层不同步
+    LaunchedEffect(sharedViewModel.pendingScanResult) {
+        val result = sharedViewModel.pendingScanResult ?: return@LaunchedEffect
+        sharedViewModel.rawPolygonToEdit = result.boundary
+        sharedViewModel.pendingGridPoints = result.gridPoints
+        sharedViewModel.pendingScanResult = null
+        sharedViewModel.isArScanning = false
+    }
 
-                    navIcons.forEachIndexed { index, icon ->
-                        val isSelected = selectedTabIndex == index
-                        NavigationBarItem(
-                            selected = isSelected,
-                            onClick = { coroutineScope.launch { pagerState.animateScrollToPage(index) } },
-                            icon = { Icon(imageVector = icon, contentDescription = navLabels[index]) },
-                            label = { Text(text = navLabels[index], style = MaterialTheme.typography.labelSmall, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium) },
-                            alwaysShowLabel = true,
-                            colors = NavigationBarItemDefaults.colors(
-                                indicatorColor = MaterialTheme.colorScheme.primary,
-                                selectedIconColor = MaterialTheme.colorScheme.onPrimary,
-                                selectedTextColor = MaterialTheme.colorScheme.primary,
-                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        )
-                    }
-                }
-            }
-        }
-    ) { innerPadding ->
+    // 导航栏显隐由 isArScanning / rawPolygonToEdit 同步驱动
+    sharedViewModel.isBottomBarVisible = !(sharedViewModel.isArScanning || sharedViewModel.rawPolygonToEdit != null)
+
+    // 导航栏高度固定 72dp，不用 Scaffold bottomBar，避免 innerPadding 动态变化引起内容区抖动
+    val navBarHeight = 72.dp
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        // 内容区：底部固定预留 navBarHeight 的 padding，不随导航栏动画变化
         HorizontalPager(
             state = pagerState,
-            modifier = Modifier.fillMaxSize().padding(bottom = innerPadding.calculateBottomPadding()),
+            modifier = Modifier.fillMaxSize().padding(bottom = navBarHeight),
             userScrollEnabled = false,
             beyondViewportPageCount = 3
         ) { page ->
@@ -197,6 +181,70 @@ fun MainAppScreen(sharedViewModel: SharedViewModel) {
                 1 -> FingerprintManagerScreen(sharedViewModel, 0.dp)
                 2 -> PositioningTestScreen(sharedViewModel, 0.dp)
                 3 -> SettingsScreen(sharedViewModel, 0.dp)
+            }
+        }
+
+        // AR 扫描页：全屏悬浮在顶层，完全脱离 Pager 的 padding 约束
+        AnimatedVisibility(
+            visible = sharedViewModel.isArScanning,
+            enter = slideInVertically(animationSpec = tween(350)) { it / 6 } + fadeIn(tween(350)),
+            exit  = slideOutVertically(animationSpec = tween(250)) { it / 6 } + fadeOut(tween(250)),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            BackHandler(enabled = sharedViewModel.isArScanning) { sharedViewModel.isArScanning = false }
+            ArScannerScreen(
+                sharedViewModel = sharedViewModel,
+                onComplete = { scanResult -> sharedViewModel.pendingScanResult = scanResult },
+                onCancel   = { sharedViewModel.isArScanning = false }
+            )
+        }
+
+        // 精修页：同样全屏悬浮，脱离 Pager padding
+        if (!sharedViewModel.isArScanning && sharedViewModel.rawPolygonToEdit != null) {
+            BackHandler { sharedViewModel.rawPolygonToEdit = null }
+            MapVerificationScreen(
+                rawPolygon  = sharedViewModel.rawPolygonToEdit!!,
+                rawObstacles = emptyList(),
+                sharedViewModel = sharedViewModel,
+                onSaveSuccess = { sharedViewModel.rawPolygonToEdit = null; sharedViewModel.pendingGridPoints = emptyList() },
+                onDiscard     = { sharedViewModel.rawPolygonToEdit = null; sharedViewModel.pendingGridPoints = emptyList() },
+                onRescan      = { sharedViewModel.rawPolygonToEdit = null; sharedViewModel.pendingGridPoints = emptyList(); sharedViewModel.isArScanning = true }
+            )
+        }
+
+        // 导航栏悬浮在内容上方，动画只影响自身位置，不影响内容区 padding
+        AnimatedVisibility(
+            visible = sharedViewModel.isBottomBarVisible,
+            enter = slideInVertically(initialOffsetY = { it }),
+            exit  = slideOutVertically(targetOffsetY = { it }),
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
+            NavigationBar(
+                modifier = Modifier.height(navBarHeight),
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                tonalElevation = 3.dp
+            ) {
+                val navIcons = listOf(Icons.Rounded.CellTower, Icons.Rounded.Map, Icons.Rounded.Explore, Icons.Rounded.Settings)
+                val navLabels = listOf("基站", "地图", "定位", "设置")
+                val selectedTabIndex = pagerState.targetPage
+
+                navIcons.forEachIndexed { index, icon ->
+                    val isSelected = selectedTabIndex == index
+                    NavigationBarItem(
+                        selected = isSelected,
+                        onClick = { coroutineScope.launch { pagerState.animateScrollToPage(index) } },
+                        icon = { Icon(imageVector = icon, contentDescription = navLabels[index]) },
+                        label = { Text(text = navLabels[index], style = MaterialTheme.typography.labelSmall, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium) },
+                        alwaysShowLabel = true,
+                        colors = NavigationBarItemDefaults.colors(
+                            indicatorColor = MaterialTheme.colorScheme.primary,
+                            selectedIconColor = MaterialTheme.colorScheme.onPrimary,
+                            selectedTextColor = MaterialTheme.colorScheme.primary,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    )
+                }
             }
         }
     }

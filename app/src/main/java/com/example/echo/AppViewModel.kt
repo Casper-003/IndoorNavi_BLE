@@ -83,10 +83,16 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     var darkModeConfig by mutableStateOf(DarkModeConfig.SYSTEM); private set
     var isIgnoreUnnamedEnabled by mutableStateOf(false); private set
 
-    // 🌟 新增：控制全局底部导航栏的显隐
+    // 全局底部导航栏显隐（由 isArScanning / rawPolygonToEdit 驱动，在 MainAppScreen 计算）
     var isBottomBarVisible by mutableStateOf(true)
-    var isCollectingMode by mutableStateOf(false) // 遗留的集合模式开关（阶段二会被重构）
+    var isCollectingMode by mutableStateOf(false)
     var gridSpacing by mutableStateOf("2")
+
+    // AR 扫描全局状态（提升到顶层，使 ArScannerScreen 能脱离 Pager padding 真正全屏）
+    var isArScanning by mutableStateOf(false)
+    var rawPolygonToEdit by mutableStateOf<List<Point>?>(null)
+    var pendingGridPoints by mutableStateOf<List<Point>>(emptyList())
+    var pendingScanResult by mutableStateOf<ScanResult?>(null)
 
     init {
         // 1. 初始化 DataStore 偏好设置
@@ -228,6 +234,18 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
         val mapId = _currentActiveMapId.value ?: return
         viewModelScope.launch(Dispatchers.IO) {
             obstacleDao.clearAllObstaclesInMap(mapId)
+        }
+    }
+
+    // AR 扫描结束后批量写入自动识别的障碍物
+    fun saveObstaclesForMap(mapId: String, obstacles: List<Point>, res: Double = 0.15) {
+        viewModelScope.launch(Dispatchers.IO) {
+            obstacleDao.clearAllObstaclesInMap(mapId)
+            obstacles.forEach { p ->
+                val c = (p.x / res).toInt()
+                val r = (p.y / res).toInt()
+                obstacleDao.insertObstacle(ObstacleEntity("AR_OBS_${c}_${r}", mapId, c * res, r * res))
+            }
         }
     }
 

@@ -72,53 +72,14 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
     var showBatchDeleteDialog by remember { mutableStateOf(false) }
 
-    var isArScanning by remember { mutableStateOf(false) }
-    var rawPolygonToEdit by remember { mutableStateOf<List<Point>?>(null) }
-    var pendingGridPoints by remember { mutableStateOf<List<Point>>(emptyList()) }
-    var pendingScanResult by remember { mutableStateOf<ScanResult?>(null) }
-
     // 退出管理模式时清空选择
     LaunchedEffect(isManageMode) { if (!isManageMode) selectedIds = emptySet() }
 
-    LaunchedEffect(pendingScanResult) {
-        if (pendingScanResult != null) {
-            rawPolygonToEdit = pendingScanResult!!.boundary
-            pendingGridPoints = pendingScanResult!!.gridPoints
-            pendingScanResult = null
-            isArScanning = false
-        }
-    }
+    // AR 扫描和精修页已提升到 MainAppScreen 顶层，FingerprintManagerScreen 只负责触发入口
+    // 入口：sharedViewModel.isArScanning = true（由各按钮调用）
+    if (sharedViewModel.isArScanning || sharedViewModel.rawPolygonToEdit != null) return
 
-    LaunchedEffect(isArScanning, rawPolygonToEdit) {
-        sharedViewModel.isBottomBarVisible = !(isArScanning || rawPolygonToEdit != null)
-    }
-
-    AnimatedVisibility(
-        visible = isArScanning,
-        enter = slideInVertically(animationSpec = tween(350)) { it / 6 } + fadeIn(tween(350)),
-        exit  = slideOutVertically(animationSpec = tween(250)) { it / 6 } + fadeOut(tween(250))
-    ) {
-        BackHandler(enabled = isArScanning) { isArScanning = false }
-        ArScannerScreen(
-            sharedViewModel = sharedViewModel,
-            onComplete = { scanResult -> pendingScanResult = scanResult },
-            onCancel = { isArScanning = false }
-        )
-    }
-
-    if (!isArScanning) {
-        if (rawPolygonToEdit != null) {
-            BackHandler { rawPolygonToEdit = null }
-            MapVerificationScreen(
-                rawPolygon = rawPolygonToEdit!!,
-                rawObstacles = emptyList(),
-                sharedViewModel = sharedViewModel,
-                onSaveSuccess = { rawPolygonToEdit = null; pendingGridPoints = emptyList() },
-                onDiscard = { rawPolygonToEdit = null; pendingGridPoints = emptyList() },
-                onRescan = { rawPolygonToEdit = null; pendingGridPoints = emptyList(); isArScanning = true }
-            )
-        } else {
-            // 采集界面：AnimatedVisibility 始终挂在组合树上，保证进入/退出动画都能播放
+    // 采集界面：AnimatedVisibility 始终挂在组合树上，保证进入/退出动画都能播放
             if (sharedViewModel.isCollectingMode) BackHandler { sharedViewModel.isCollectingMode = false }
             AnimatedVisibility(
                 visible = sharedViewModel.isCollectingMode,
@@ -272,7 +233,7 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
                             onBack = { selectedMap = null },
                             onReEdit = { poly ->
                                 selectedMap = null
-                                rawPolygonToEdit = poly
+                                sharedViewModel.rawPolygonToEdit = poly
                             }
                         )
                     }
@@ -282,7 +243,7 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
             if (showNewMapDialog) {
                 NewMapSelectionDialog(
                     onDismiss = { showNewMapDialog = false },
-                    onSelectAR = { showNewMapDialog = false; isArScanning = true },
+                    onSelectAR = { showNewMapDialog = false; sharedViewModel.isArScanning = true },
                     onSelectManual = { showNewMapDialog = false; showManualMapDialog = true }
                 )
             }
@@ -321,8 +282,6 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
                 )
             }
             } // end if (!isCollectingMode)
-        } // end else (normal map list UI)
-    } // end if (!isArScanning)
 }
 
 // ---------------- 卡片组件 ----------------
