@@ -36,6 +36,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 import android.graphics.Color as AndroidColor
 import android.Manifest
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -223,31 +225,49 @@ fun MainAppScreen(sharedViewModel: SharedViewModel) {
             exit  = slideOutVertically(targetOffsetY = { it }),
             modifier = Modifier.align(Alignment.BottomCenter)
         ) {
-            NavigationBar(
-                modifier = Modifier.height(navBarHeight),
-                containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                tonalElevation = 3.dp
-            ) {
-                val navIconsFilled   = listOf(Icons.Filled.CellTower,   Icons.Filled.Map,   Icons.Filled.Explore,   Icons.Filled.Settings)
-                val navIconsOutlined = listOf(Icons.Outlined.CellTower, Icons.Outlined.Map, Icons.Outlined.Explore, Icons.Outlined.Settings)
-                val navLabels = listOf("基站", "地图", "定位", "设置")
-                val selectedTabIndex = pagerState.targetPage
+            val isDark = isSystemInDarkTheme()
+            val overlayColor = if (isDark) Color(0xFF1A1A1A) else Color.White
+            val navOverlayAlpha by androidx.compose.animation.core.animateFloatAsState(
+                targetValue = if (sharedViewModel.isFabExpanded) 0.6f else 0f,
+                animationSpec = tween(200),
+                label = "navOverlay"
+            )
+            Box {
+                NavigationBar(
+                    modifier = Modifier.height(navBarHeight),
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                    tonalElevation = 3.dp
+                ) {
+                    val navIconsFilled   = listOf(Icons.Filled.CellTower,   Icons.Filled.Map,   Icons.Filled.Explore,   Icons.Filled.Settings)
+                    val navIconsOutlined = listOf(Icons.Outlined.CellTower, Icons.Outlined.Map, Icons.Outlined.Explore, Icons.Outlined.Settings)
+                    val navLabels = listOf("基站", "地图", "定位", "设置")
+                    val selectedTabIndex = pagerState.targetPage
 
-                navLabels.forEachIndexed { index, label ->
-                    val isSelected = selectedTabIndex == index
-                    NavigationBarItem(
-                        selected = isSelected,
-                        onClick = { coroutineScope.launch { pagerState.animateScrollToPage(index) } },
-                        icon = { Icon(imageVector = if (isSelected) navIconsFilled[index] else navIconsOutlined[index], contentDescription = label) },
-                        label = { Text(text = label, style = MaterialTheme.typography.labelSmall, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium) },
-                        alwaysShowLabel = true,
-                        colors = NavigationBarItemDefaults.colors(
-                            indicatorColor = MaterialTheme.colorScheme.primaryContainer,
-                            selectedIconColor = MaterialTheme.colorScheme.primary,
-                            selectedTextColor = MaterialTheme.colorScheme.primary,
-                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    navLabels.forEachIndexed { index, label ->
+                        val isSelected = selectedTabIndex == index
+                        NavigationBarItem(
+                            selected = isSelected,
+                            onClick = { coroutineScope.launch { pagerState.animateScrollToPage(index) } },
+                            icon = { Icon(imageVector = if (isSelected) navIconsFilled[index] else navIconsOutlined[index], contentDescription = label) },
+                            label = { Text(text = label, style = MaterialTheme.typography.labelSmall, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium) },
+                            alwaysShowLabel = true,
+                            colors = NavigationBarItemDefaults.colors(
+                                indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                selectedIconColor = MaterialTheme.colorScheme.primary,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         )
+                    }
+                }
+                // 导航栏遮罩叠层
+                if (navOverlayAlpha > 0f) {
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .background(overlayColor.copy(alpha = navOverlayAlpha))
+                            .clickable(enabled = false) {}
                     )
                 }
             }

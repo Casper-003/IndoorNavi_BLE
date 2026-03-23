@@ -86,6 +86,7 @@ class SharedViewModel(application: Application) : AndroidViewModel(application) 
     // 全局底部导航栏显隐（由 isArScanning / rawPolygonToEdit 驱动，在 MainAppScreen 计算）
     var isBottomBarVisible by mutableStateOf(true)
     var isCollectingMode by mutableStateOf(false)
+    var isFabExpanded by mutableStateOf(false)
     var gridSpacing by mutableStateOf("2")
 
     // AR 扫描全局状态（提升到顶层，使 ArScannerScreen 能脱离 Pager padding 真正全屏）

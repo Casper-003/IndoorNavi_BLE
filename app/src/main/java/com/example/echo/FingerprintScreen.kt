@@ -9,7 +9,11 @@ import android.hardware.SensorManager
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Spring
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -67,7 +71,6 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
     var selectedMap by remember { mutableStateOf<MapEntity?>(null) }
     var showNewMapDialog by remember { mutableStateOf(false) }
     var showManualMapDialog by remember { mutableStateOf(false) }
-    var isFabExpanded by remember { mutableStateOf(false) }
 
     // 管理模式
     var isManageMode by remember { mutableStateOf(false) }
@@ -99,7 +102,7 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
             if (!sharedViewModel.isCollectingMode) {
             // 管理模式拦截物理返回；FAB 展开时也拦截
             if (isManageMode) BackHandler { isManageMode = false }
-            if (isFabExpanded) BackHandler { isFabExpanded = false }
+            if (sharedViewModel.isFabExpanded) BackHandler { sharedViewModel.isFabExpanded = false }
 
             SharedTransitionLayout {
                 AnimatedContent(
@@ -111,27 +114,7 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
                         Box(modifier = Modifier.fillMaxSize()) {
                         Scaffold(
                             containerColor = Color.Transparent,
-                            floatingActionButton = {
-                                if (!isManageMode) {
-                                    val fabRotation by androidx.compose.animation.core.animateFloatAsState(
-                                        targetValue = if (isFabExpanded) 45f else 0f,
-                                        animationSpec = tween(300),
-                                        label = "fabRotation"
-                                    )
-                                    FloatingActionButton(
-                                        onClick = { isFabExpanded = !isFabExpanded },
-                                        containerColor = MaterialTheme.colorScheme.primary,
-                                        contentColor = MaterialTheme.colorScheme.onPrimary,
-                                        modifier = Modifier.padding(bottom = bottomPadding)
-                                    ) {
-                                        Icon(
-                                            Icons.Default.Add,
-                                            contentDescription = "新建",
-                                            modifier = Modifier.rotate(fabRotation)
-                                        )
-                                    }
-                                }
-                            },
+                            floatingActionButton = {},
                             topBar = {
                                 if (isManageMode) {
                                     // ── 管理模式顶栏 ──
@@ -198,7 +181,7 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
                             }
                         ) { innerPadding ->
                             if (maps.isEmpty()) {
-                                EmptyMapState(Modifier.fillMaxSize().padding(innerPadding)) { isFabExpanded = true }
+                                EmptyMapState(Modifier.fillMaxSize().padding(innerPadding)) { sharedViewModel.isFabExpanded = true }
                             } else {
                                 LazyVerticalGrid(
                                     columns = GridCells.Adaptive(minSize = 160.dp),
@@ -239,67 +222,123 @@ fun FingerprintManagerScreen(sharedViewModel: SharedViewModel, bottomPadding: Dp
                             }
                         }
 
-                        // ── 背景遮罩 ──
+                        // ── 背景遮罩（在选项泡之下，点击关闭）──
+                        val isDark = isSystemInDarkTheme()
+                        val overlayColor = if (isDark) Color(0xFF1A1A1A) else Color.White
                         AnimatedVisibility(
-                            visible = isFabExpanded,
+                            visible = sharedViewModel.isFabExpanded,
                             enter = fadeIn(tween(200)),
                             exit  = fadeOut(tween(200))
                         ) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .background(Color.Black.copy(alpha = 0.5f))
-                                    .clickable { isFabExpanded = false }
+                                    .background(overlayColor.copy(alpha = 0.75f))
+                                    .clickable { sharedViewModel.isFabExpanded = false }
                             )
                         }
 
                         // ── 弹出菜单选项 ──
                         val menuItems = listOf(
-                            Triple(Icons.Default.Straighten, "手动输入尺寸") { isFabExpanded = false; showManualMapDialog = true },
-                            Triple(Icons.Default.ViewInAr,   "AR 实景测绘")  { isFabExpanded = false; sharedViewModel.isArScanning = true }
+                            Triple(Icons.Default.Straighten, "手动输入尺寸") { sharedViewModel.isFabExpanded = false; showManualMapDialog = true },
+                            Triple(Icons.Default.ViewInAr,   "AR 实景测绘")  { sharedViewModel.isFabExpanded = false; sharedViewModel.isArScanning = true }
                         )
                         Column(
                             horizontalAlignment = Alignment.End,
                             modifier = Modifier
                                 .align(Alignment.BottomEnd)
-                                .padding(end = 16.dp, bottom = bottomPadding + 88.dp)
+                                .padding(end = 16.dp, bottom = bottomPadding + 100.dp)
                         ) {
                             menuItems.forEachIndexed { index, (icon, label, action) ->
-                                val delay = index * 50
+                                val delay = index * 60
                                 androidx.compose.animation.AnimatedVisibility(
-                                    visible = isFabExpanded,
-                                    enter = fadeIn(tween(200, delayMillis = delay)) + slideInVertically(tween(250, delayMillis = delay)) { it / 2 },
-                                    exit  = fadeOut(tween(150)) + slideOutVertically(tween(150)) { it / 2 }
+                                    visible = sharedViewModel.isFabExpanded,
+                                    enter = fadeIn(tween(180, delayMillis = delay)) + slideInHorizontally(
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                                            stiffness = Spring.StiffnessMediumLow
+                                        ),
+                                        initialOffsetX = { it }
+                                    ),
+                                    exit  = fadeOut(tween(120)) + slideOutHorizontally(
+                                        animationSpec = tween(150),
+                                        targetOffsetX = { it }
+                                    )
                                 ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier
-                                            .padding(bottom = 12.dp)
-                                            .clickable(onClick = action)
+                                    Surface(
+                                        onClick = action,
+                                        shape = RoundedCornerShape(50),
+                                        color = MaterialTheme.colorScheme.surfaceContainer,
+                                        tonalElevation = 4.dp,
+                                        modifier = Modifier.padding(bottom = 12.dp)
                                     ) {
-                                        // 标签
-                                        Surface(
-                                            shape = RoundedCornerShape(50),
-                                            color = MaterialTheme.colorScheme.surfaceContainer,
-                                            tonalElevation = 4.dp,
-                                            modifier = Modifier.padding(end = 12.dp)
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
                                         ) {
+                                            Icon(
+                                                icon,
+                                                contentDescription = label,
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Spacer(Modifier.width(8.dp))
                                             Text(
                                                 text = label,
                                                 style = MaterialTheme.typography.labelLarge,
                                                 fontWeight = FontWeight.SemiBold,
-                                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                                                color = MaterialTheme.colorScheme.onSurface
                                             )
                                         }
-                                        // 小 FAB
-                                        SmallFloatingActionButton(
-                                            onClick = action,
-                                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                        ) {
-                                            Icon(icon, contentDescription = label)
-                                        }
                                     }
+                                }
+                            }
+                        }
+                        // ── FAB（遮罩和选项泡之上，始终可点击）──
+                        if (!isManageMode) {
+                            val fabRotation by androidx.compose.animation.core.animateFloatAsState(
+                                targetValue = if (sharedViewModel.isFabExpanded) 45f else 0f,
+                                animationSpec = tween(300),
+                                label = "fabRotation"
+                            )
+                            val fabSize by animateDpAsState(
+                                targetValue = if (sharedViewModel.isFabExpanded) 56.dp else 72.dp,
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                                    stiffness = Spring.StiffnessMedium
+                                ),
+                                label = "fabSize"
+                            )
+                            val fabCorner by animateDpAsState(
+                                targetValue = if (sharedViewModel.isFabExpanded) 28.dp else 20.dp,
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                                    stiffness = Spring.StiffnessMedium
+                                ),
+                                label = "fabCorner"
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(end = 16.dp, bottom = bottomPadding + 16.dp)
+                                    .size(72.dp)
+                            ) {
+                                FloatingActionButton(
+                                    onClick = { sharedViewModel.isFabExpanded = !sharedViewModel.isFabExpanded },
+                                    containerColor = MaterialTheme.colorScheme.primary,
+                                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                                    shape = RoundedCornerShape(fabCorner),
+                                    modifier = Modifier
+                                        .size(fabSize)
+                                        .offset(x = 72.dp - fabSize, y = 72.dp - fabSize)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Add,
+                                        contentDescription = "新建",
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .rotate(fabRotation)
+                                    )
                                 }
                             }
                         }
@@ -781,8 +820,6 @@ fun EmptyMapState(modifier: Modifier, onAddClick: () -> Unit) {
         Text("你的空间资产库空空如也", style = MaterialTheme.typography.titleMedium, color = Color.Gray, fontWeight = FontWeight.Bold)
         Spacer(modifier = Modifier.height(8.dp))
         Text("使用 AR 扫描房间，或手动建立平面图", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
-        Spacer(modifier = Modifier.height(24.dp))
-        Button(onClick = onAddClick) { Text("立即创建第一张地图") }
     }
 }
 
